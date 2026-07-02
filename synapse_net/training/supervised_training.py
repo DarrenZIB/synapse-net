@@ -1,13 +1,19 @@
 import os
+from synapse_net.file_utils import save_args_to_yaml
 from glob import glob
 from typing import Optional, Tuple
+import mrcfile
+from glob import glob
 
 import torch
+import numpy as np
 import torch_em
 from sklearn.model_selection import train_test_split
 from torch_em.model import AnisotropicUNet, UNet2d
 
 from synapse_net.inference.inference import get_model_path, get_available_models
+ # from roi_test import rois_for_paths
+
 
 
 def get_3d_model(
@@ -161,7 +167,7 @@ def get_supervised_loader(
     shuffle = loader_kwargs.pop("shuffle", True)
 
     if sampler is None:
-        sampler = torch_em.data.sampler.MinInstanceSampler(min_num_instances=4)
+        sampler = torch_em.data.sampler.MinInstanceSampler(min_num_instances=2)
 
     if label_paths is None:
         label_paths = data_paths
@@ -178,6 +184,39 @@ def get_supervised_loader(
     )
     return loader
 
+def _expand_rois(rois, n_files):
+    """torch_em wants one ROI per file. If a single ROI (tuple of slices) was
+    given, replicate it across all files. If it's already a per-file list, leave it."""
+    if rois is None:
+        return None
+    if isinstance(rois, tuple) and all(isinstance(r, slice) for r in rois):
+        return [rois] * n_files          # single ROI -> one per file
+    return rois                          # already a list of per-file ROIs
+
+
+def save_loader_patches_mrc(loader, n_samples=5, save_dir="loader_check_mrc"):
+    """Save raw + label patches from a loader as .mrc files (3D volumes)."""
+    os.makedirs(save_dir, exist_ok=True)
+    saved = 0
+    for x, y in loader:
+        raw = x[0].detach().cpu().numpy()
+        lab = y[0].detach().cpu().numpy()
+        raw_out = np.ascontiguousarray(raw[0], dtype=np.float32)
+        lab_out = np.ascontiguousarray(lab[0], dtype=np.float32)
+        raw_path = os.path.join(save_dir, f"sample_{saved:02d}_raw.mrc")
+        lab_path = os.path.join(save_dir, f"sample_{saved:02d}_label.mrc")
+        with mrcfile.new(raw_path, overwrite=True) as f:
+            f.set_data(raw_out)
+        with mrcfile.new(lab_path, overwrite=True) as f:
+            f.set_data(lab_out)
+        print(f"saved {raw_path}  shape {raw_out.shape}  "
+              f"| label fg voxels: {int((lab[0] > 0).sum())}")
+        saved += 1
+        if saved >= n_samples:
+            break
+    if saved == 0:
+        print("WARNING: loader produced no batches — nothing saved.")
+    return save_dir
 
 def supervised_training(
     name: str,
@@ -192,8 +231,8 @@ def supervised_training(
     n_iterations: int = int(1e5),
     train_label_paths: Optional[Tuple[str]] = None,
     val_label_paths: Optional[Tuple[str]] = None,
-    train_rois: Optional[Tuple[Tuple[slice]]] = None,
-    val_rois: Optional[Tuple[Tuple[slice]]] = None,
+    train_rois: Optional[Tuple[slice]] = None,
+    val_rois:   Optional[Tuple[slice]] = None,
     sampler: Optional[callable] = None,
     n_samples_train: Optional[int] = None,
     n_samples_val: Optional[int] = None,
@@ -251,6 +290,9 @@ def supervised_training(
         checkpoint_path: Path to the directory where 'best.pt' resides; continue training this model.
         loader_kwargs: Additional keyword arguments for the dataloader.
     """
+
+
+
     train_loader = get_supervised_loader(train_paths, raw_key, label_key, patch_shape, batch_size,
                                          n_samples=n_samples_train, rois=train_rois, sampler=sampler,
                                          ignore_label=ignore_label, label_transform=label_transform,
@@ -260,10 +302,19 @@ def supervised_training(
                                        ignore_label=ignore_label, label_transform=label_transform,
                                        label_paths=val_label_paths, **loader_kwargs)
 
+    # if check:
+    #     from torch_em.util.debug import check_loader
+    #     check_loader(train_loader, n_samples=4)
+    #     check_loader(val_loader, n_samples=4)
+    #     return
+
     if check:
-        from torch_em.util.debug import check_loader
-        check_loader(train_loader, n_samples=4)
-        check_loader(val_loader, n_samples=4)
+        save_loader_patches_mrc(train_loader, n_samples=5,
+                                save_dir=os.path.join(save_root or "checkpoints",
+                                                      name, "loader_check_train"))
+        save_loader_patches_mrc(val_loader, n_samples=5,
+                                save_dir=os.path.join(save_root or "checkpoints",
+                                                      name, "loader_check_val"))
         return
 
     is_2d, _ = _determine_ndim(patch_shape)
@@ -356,6 +407,7 @@ def _parse_input_folder(folder, pattern, key):
 def _parse_input_files(args):
     train_image_paths, raw_key = _parse_input_folder(args.train_folder, args.image_file_pattern, args.raw_key)
     train_label_paths, label_key = _parse_input_folder(args.label_folder, args.label_file_pattern, args.label_key)
+
     if len(train_image_paths) != len(train_label_paths):
         raise ValueError(
             f"The image and label paths parsed from {args.train_folder} and {args.label_folder} don't match."
@@ -405,12 +457,12 @@ def main():
 
     # Folders with training data, containing raw/image data and labels.
     parser.add_argument("-i", "--train_folder", required=True, help="The input folder with the training image data.")
-    parser.add_argument("--image_file_pattern", default="*",
+    parser.add_argument("--image_file_pattern", default="*.mrc",
                         help="The pattern for selecting image files. For example, '*.mrc' to select all mrc files.")
     parser.add_argument("--raw_key",
                         help="The internal path for the raw data. If not given, will be determined based on the file extension.")  # noqa
     parser.add_argument("-l", "--label_folder", required=True, help="The input folder with the training labels.")
-    parser.add_argument("--label_file_pattern", default="*",
+    parser.add_argument("--label_file_pattern", default="*.mrc",
                         help="The pattern for selecting label files. For example, '*.tif' to select all tif files.")
     parser.add_argument("--label_key",
                         help="The internal path for the label data. If not given, will be determined based on the file extension.")  # noqa
@@ -439,10 +491,23 @@ def main():
     parser.add_argument("--check", action="store_true", help="Visualize samples from the data loaders to ensure correct data instead of running training.")  # noqa
     parser.add_argument("--n_iterations", type=int, default=int(1e5), help="The maximal number of iterations to train for.")  # noqa
     parser.add_argument("--save_root", help="Root path for saving the checkpoint and log dir.")
+    parser.add_argument("--roi_file", default=None,
+                        help="Text file mapping 'filename.mrc : [z, y, x]' to per-file ROIs.")
     args = parser.parse_args()
+
+    # Save configuration to YAML
+    save_dir = args.save_root if args.save_root else os.path.join("checkpoints", args.name)
+    save_args_to_yaml(args, save_dir, prefix="supervised_training_config")
 
     train_image_paths, train_label_paths, val_image_paths, val_label_paths, raw_key, label_key =\
         _parse_input_files(args)
+
+    #train_rois = rois_for_paths(args.roi_file, train_image_paths) if args.roi_file else None
+    #val_rois = rois_for_paths(args.roi_file, val_image_paths) if args.roi_file else None
+
+    #print(train_rois)
+    #print(val_rois)
+
     checkpoint_path = _parse_checkpoint(args.initial_model)
 
     supervised_training(
@@ -452,4 +517,5 @@ def main():
         n_samples_train=args.n_samples_train, n_samples_val=args.n_samples_val,
         check=args.check, n_iterations=args.n_iterations, save_root=args.save_root,
         checkpoint_path=checkpoint_path
+        #, train_rois=train_rois, val_rois=val_rois,
     )

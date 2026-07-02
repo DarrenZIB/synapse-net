@@ -113,7 +113,7 @@ def get_model(model_type: str, device: Optional[Union[str, torch.device]] = None
 #
 
 
-def get_model_training_resolution(model_type: str) -> Dict[str, float]:
+def get_model_training_resolution(model_type: str, custom_resolution: float = None) -> Dict[str, float]:
     """Get the average resolution / voxel size of the training data for a given pretrained model.
 
     Args:
@@ -133,12 +133,19 @@ def get_model_training_resolution(model_type: str) -> Dict[str, float]:
         "ribbon": {"x": 1.188, "y": 1.188, "z": 1.188},
         "vesicles_2d": {"x": 1.35, "y": 1.35},
         "vesicles_3d": {"x": 1.35, "y": 1.35, "z": 1.35},
-        "vesicles_cryo": {"x": 1.35, "y": 1.35, "z": 0.88},
+        "vesicles_cryo": {"x":1, "y": 1, "z": 1},
         # TODO add the correct resolutions, these are the resolutions of the source models.
         "vesicles_2d_maus": {"x": 1.35, "y": 1.35},
         "vesicles_3d_endbulb": {"x": 1.35, "y": 1.35, "z": 1.35},
         "vesicles_3d_innerear": {"x": 1.35, "y": 1.35, "z": 1.35},
     }
+    # If custom resolution provided, add it for this model
+    if custom_resolution is not None:
+        resolutions[model_type] = {
+            "x": custom_resolution,
+            "y": custom_resolution,
+            "z": custom_resolution
+        }
     return resolutions[model_type]
 
 
@@ -233,6 +240,7 @@ def run_segmentation(
     tiling: Optional[Dict[str, Dict[str, int]]] = None,
     scale: Optional[List[float]] = None,
     verbose: bool = False,
+    no_postprocessing: bool = False,
     **kwargs,
 ) -> np.ndarray | Dict[str, np.ndarray]:
     """Run synaptic structure segmentation.
@@ -245,26 +253,58 @@ def run_segmentation(
         scale: A scale factor for resizing the input before applying the model.
             The output will be scaled back to the initial size.
         verbose: Whether to print detailed information about the prediction and segmentation.
+        no_postprocessing: If True, skip instance-segmentation post-processing and return
+            the raw thresholded foreground prediction. Useful for structures the vesicle
+            post-processing doesn't fit, such as tubes.
         kwargs: Optional parameters for the segmentation function.
 
     Returns:
         The segmentation. For models that return multiple segmentations, this function returns a dictionary.
     """
-    if model_type.startswith("vesicles"):
-        segmentation = segment_vesicles(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
-    elif model_type == "mitochondria" or model_type == "mitochondria2":
-        segmentation = segment_mitochondria(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
-    elif model_type == "active_zone":
-        segmentation = segment_active_zone(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
-    elif model_type == "compartments":
-        segmentation = segment_compartments(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
-    elif model_type == "ribbon":
-        segmentation = _segment_ribbon_AZ(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
-    elif model_type == "cristae" or model_type == "cristae2" or model_type == "cristae3":
-        training_resolution = get_model_training_resolution(model_type)
-        voxel_size = np.mean(list(training_resolution.values()))
-        segmentation = segment_cristae(image, model=model, tiling=tiling, scale=scale, verbose=verbose,
-                                       voxel_size=voxel_size, **kwargs)
+    # --- DEBUG: save raw network prediction before any post-processing ---
+    if os.environ.get("SYNAPSE_DEBUG_PRED"):
+        import mrcfile
+        from .util import get_prediction
+        raw_pred = get_prediction(image, tiling=tiling, model=model, verbose=True)
+        print("pred shape:", raw_pred.shape)  # expect (>=2, z, y, x)
+        fg, bd = raw_pred[0], raw_pred[1]
+        print(f"foreground: max {fg.max():.3f} mean {fg.mean():.3f} frac>0.5 {(fg > 0.5).mean():.4f}")
+        print(f"boundary  : max {bd.max():.3f} mean {bd.mean():.3f} frac>0.5 {(bd > 0.5).mean():.4f}")
+        rp = np.asarray(raw_pred, dtype=np.float32)
+        print(f"[debug] raw prediction shape {rp.shape} "
+              f"min {rp.min():.4f} max {rp.max():.4f} mean {rp.mean():.4f} "
+              f"frac>0.5 {float((rp > 0.5).mean()):.4f}")
+        out = os.environ["SYNAPSE_DEBUG_PRED"]
+        save = rp
+        with mrcfile.new(out, overwrite=True) as f:
+            f.set_data(np.ascontiguousarray(save, dtype=np.float32))
+        print(f"[debug] saved raw prediction to {out}")
+    # --- end debug ---
+
+
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
-    return segmentation
+        if model_type.startswith("vesicles"):
+            if no_postprocessing:
+                from .util import get_prediction
+                pred = get_prediction(image, tiling=tiling, model=model, verbose=verbose)
+                return (pred[0]) # foreground mask (your tubes)
+            print("With Post Processing")
+            segmentation = segment_vesicles(
+                image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs
+            )
+        elif model_type == "mitochondria" or model_type == "mitochondria2":
+            segmentation = segment_mitochondria(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
+        elif model_type == "active_zone":
+            segmentation = segment_active_zone(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
+        elif model_type == "compartments":
+            segmentation = segment_compartments(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
+        elif model_type == "ribbon":
+            segmentation = _segment_ribbon_AZ(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
+        elif model_type == "cristae" or model_type == "cristae2" or model_type == "cristae3":
+            training_resolution = get_model_training_resolution(model_type)
+            voxel_size = np.mean(list(training_resolution.values()))
+            segmentation = segment_cristae(image, model=model, tiling=tiling, scale=scale, verbose=verbose,
+                                           voxel_size=voxel_size, **kwargs)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+        return segmentation

@@ -1,4 +1,5 @@
 import os
+from synapse_net.file_utils import save_args_to_yaml
 import tempfile
 from glob import glob
 from pathlib import Path
@@ -305,10 +306,27 @@ def main():
     parser.add_argument("--val_fraction", type=float, default=0.15, help="The fraction of the data to use for validation. This has no effect if 'val_folder' and 'val_label_folder' were passed.")  # noqa
     parser.add_argument("--check", action="store_true", help="Visualize samples from the data loaders to ensure correct data instead of running training.")  # noqa
     parser.add_argument("--save_root", help="Root path for saving the checkpoint and log dir.")
-
+    parser.add_argument(
+        "--checkpoint", "-c",
+        help="Path to a custom model checkpoint. If given, this overrides --source_model."
+    )
     args = parser.parse_args()
 
-    source_checkpoint = get_model_path(args.source_model)
+    # Save configuration to YAML
+    save_dir = args.save_root if args.save_root else os.path.join("checkpoints", args.name)
+    save_args_to_yaml(args, save_dir, prefix="domain_adaptation_config")
+
+    # Use custom checkpoint if provided, otherwise use source_model
+
+    # Use custom checkpoint if provided, otherwise use source_model
+    if args.checkpoint is not None:
+        checkpoint_path = args.checkpoint
+        if checkpoint_path.endswith("best.pt"):
+            checkpoint_path = os.path.split(checkpoint_path)[0]
+        source_checkpoint = checkpoint_path
+    else:
+        source_checkpoint = get_model_path(args.source_model)
+
     patch_shape = _parse_patch_shape(args.patch_shape, args.source_model)
     with tempfile.TemporaryDirectory() as tmp_dir:
         unsupervised_train_paths, unsupervised_val_paths = _get_paths(

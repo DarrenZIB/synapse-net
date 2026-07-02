@@ -220,3 +220,84 @@ def read_data_from_cryo_et_portal_run(
         data, voxel_size = read_mrc(output_path)
 
     return data, voxel_size
+
+
+def save_args_to_yaml(args, output_dir, prefix="config"):
+    """Save command-line arguments to a YAML file for reproducibility.
+    
+    Args:
+        args: The argparse namespace object containing command-line arguments.
+        output_dir: Directory where the YAML file will be saved.
+        prefix: Prefix for the YAML filename.
+    
+    Returns:
+        The path to the saved YAML file.
+    """
+    import yaml
+    from datetime import datetime
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Convert args namespace to dictionary
+    args_dict = vars(args).copy()
+    
+    # Add timestamp
+    args_dict["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Create filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    yaml_path = os.path.join(output_dir, f"{prefix}_{timestamp}.yaml")
+    
+    with open(yaml_path, "w") as f:
+        yaml.dump(args_dict, f, default_flow_style=False, sort_keys=False)
+    
+    print(f"Saved configuration to {yaml_path}")
+    return yaml_path
+
+
+def save_args_to_yaml(args, output_dir, prefix="config"):
+    """Save command-line arguments to a YAML file for reproducibility.
+    
+    Args:
+        args: The argparse namespace object containing command-line arguments.
+        output_dir: Directory where the YAML file will be saved.
+        prefix: Prefix for the YAML filename.
+    
+    Returns:
+        The path to the saved YAML file.
+    """
+    import yaml
+    from datetime import datetime
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Convert args namespace to dictionary
+    args_dict = vars(args).copy()
+    
+    # Add timestamp
+    args_dict["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Create filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    yaml_path = os.path.join(output_dir, f"{prefix}_{timestamp}.yaml")
+    
+    with open(yaml_path, "w") as f:
+        yaml.dump(args_dict, f, default_flow_style=False, sort_keys=False)
+    
+    print(f"Saved configuration to {yaml_path}")
+    return yaml_path
+
+def write_mrc(tomo, fname, v_size=10.0, dtype=np.float32):
+    """
+    Saves a tomo (3D dataset) as MRC file
+
+    :param tomo: tomo to save as ndarray
+    :param fname: output file path
+    :param v_size: voxel size in Angstroms (default 10 = 1nm)
+    :param dtype: data type (default np.float32)
+    """
+    with mrcfile.new(fname, overwrite=True) as mrc:
+        mrc.set_data(tomo.astype(dtype))
+        mrc.voxel_size.flags.writeable = True
+        mrc.voxel_size = (v_size, v_size, v_size)
+        mrc.set_volume()

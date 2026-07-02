@@ -9,6 +9,7 @@ from ..inference.inference import _get_model_registry, get_model, get_model_trai
 from ..inference.scalable_segmentation import scalable_segmentation
 from ..inference.util import inference_helper, parse_tiling
 from .pool_visualization import _visualize_vesicle_pools
+from synapse_net.file_utils import save_args_to_yaml
 
 
 def imod_point_cli():
@@ -190,7 +191,20 @@ def segmentation_cli():
     parser.add_argument(
         "--extra_input_ext", default=".tif", help="File extension for the extra inputs, default is tif."
     )
+    parser.add_argument(
+        "--resolution", type=float,
+        help="The voxel size (in nm) the custom model was trained on. Used for scaling."
+    )
+    parser.add_argument(
+        "--no_postprocessing", "-pp", action="store_true",
+        help="hether to run instance-segmentation post-processing. "
+             "Use --no_post_processing to return the raw thresholded prediction instead "
+             "(useful for structures the vesicle post-processing doesn't fit, e.g. tubes)."
+    )
     args = parser.parse_args()
+
+    # Save configuration to YAML
+    save_args_to_yaml(args, args.output_path, prefix="segmentation_config")
 
     if args.checkpoint is None:
         model = get_model(args.model)
@@ -211,7 +225,7 @@ def segmentation_cli():
     # If the scale argument is not passed, then we get the average training resolution for the model.
     # The inputs will then be scaled to match this resolution based on the voxel size from the mrc files.
     if args.scale is None:
-        model_resolution = get_model_training_resolution(args.model)
+        model_resolution = get_model_training_resolution(args.model, args.resolution)
         model_resolution = tuple(model_resolution[ax] for ax in ("yx" if is_2d else "zyx"))
         scale = None
     # Otherwise, we set the model resolution to None and use the scaling factor provided by the user.
@@ -226,13 +240,13 @@ def segmentation_cli():
                 f"vesicles, mitochondria, or active zones, not for {args.model}."
             )
         segmentation_function = partial(
-            scalable_segmentation, model=model, tiling=tiling, verbose=args.verbose
+            scalable_segmentation, model=model, tiling=tiling, verbose=args.verbose, no_postprocessing=args.no_postprocessing,
         )
         allocate_output = True
 
     else:
         segmentation_function = partial(
-            run_segmentation, model=model, model_type=args.model, verbose=args.verbose, tiling=tiling,
+            run_segmentation, model=model, model_type=args.model, verbose=args.verbose, tiling=tiling, no_postprocessing=args.no_postprocessing,
         )
         allocate_output = False
 

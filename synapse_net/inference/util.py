@@ -15,6 +15,7 @@ import mrcfile
 import numpy as np
 import torch
 import torch_em
+import mrcfile
 # import xarray
 
 from elf.io import open_file
@@ -408,7 +409,7 @@ def inference_helper(
         input_folder, input_name = os.path.split(img_path)
 
         if output_key is None:
-            fname = os.path.splitext(input_name)[0] + "_prediction.tif"
+            fname = os.path.splitext(input_name)[0] + "_prediction.mrc"
         else:
             fname = os.path.splitext(input_name)[0] + "_prediction.h5"
 
@@ -455,7 +456,10 @@ def inference_helper(
         os.makedirs(os.path.split(output_path)[0], exist_ok=True)
 
         if output_key is None:
-            imageio.imwrite(output_path, segmentation, compression="zlib")
+            from synapse_net.file_utils import write_mrc
+            # 1.221 nm = 12.21 Angstroms
+            write_mrc(segmentation, output_path, v_size=1, dtype=np.float32)
+            # write_mrc(segmentation, output_path, dtype=np.float32)
         else:
             with open_file(output_path, "a") as f:
                 f.create_dataset(output_key, data=segmentation, compression="gzip")

@@ -52,6 +52,9 @@ def distance_based_vesicle_segmentation(
     # Get the segmentation via seeded watershed of components in the boundary distances.
     t0 = time.time()
     seeds = parallel.label(bd_dist > distance_threshold, block_shape=block_shape, verbose=verbose)
+    print(f"[debug] seeds: max={int(seeds.max())} nonzero={int((seeds > 0).sum())}")
+    print(f"[debug] max boundary-distance: {bd_dist.max():.2f}  (threshold {distance_threshold})")
+    print(f"[debug] number of seeds: {int(seeds.max())}")
     if verbose:
         print("Compute connected components in", time.time() - t0, "s")
 
@@ -69,10 +72,14 @@ def distance_based_vesicle_segmentation(
         dist, seeds, block_shape=block_shape,
         out=seg, mask=mask, verbose=verbose, halo=halo,
     )
+    print(f"[debug] after watershed: max={int(seg.max())} nonzero={int((seg > 0).sum())}")
     if verbose:
         print("Compute watershed in", time.time() - t0, "s")
 
-    seg = apply_size_filter(seg, min_size, verbose, block_shape)
+    min_size = 0
+    print(f"[debug] applying size filter with min_size={min_size}")
+    seg = apply_size_filter(seg, 0, verbose, block_shape)
+    print(f"[debug] after size filter: max={int(seg.max())} nonzero={int((seg > 0).sum())}")
     return seg
 
 
