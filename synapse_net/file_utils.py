@@ -301,3 +301,72 @@ def write_mrc(tomo, fname, v_size=10.0, dtype=np.float32):
         mrc.voxel_size.flags.writeable = True
         mrc.voxel_size = (v_size, v_size, v_size)
         mrc.set_volume()
+
+# synapse_net/training/roi_utils.py
+"""Utilities for parsing region-of-interest (ROI) specifications from text files."""
+import os
+import re
+
+
+def _parse_axis(token):
+    """'60:230'->slice(60,230); ':'->slice(None); ':230'->slice(None,230);
+       '60:'->slice(60,None); '5'->slice(5,6) (single index kept 3D)."""
+    token = token.strip()
+    if token in (":", ""):
+        return slice(None)
+    if ":" in token:
+        a, b = token.split(":")
+        start = int(a) if a.strip() else None
+        stop = int(b) if b.strip() else None
+        return slice(start, stop)
+    n = int(token)
+    return slice(n, n + 1)
+
+
+def _parse_roi_spec(spec):
+    """'[60:230, :, :]' -> (slice(60,230), slice(None), slice(None))."""
+    spec = spec.strip()
+    if spec.startswith("[") and spec.endswith("]"):
+        spec = spec[1:-1]
+    sl = tuple(_parse_axis(p) for p in spec.split(","))
+    if len(sl) != 3:
+        raise ValueError(f"Expected 3 axes (z,y,x) in ROI, got {len(sl)}: {spec!r}")
+    return sl
+
+
+def load_roi_file(path):
+    """Parse lines like 'Tomo_09_Pos_06.mrc : [60:230, :, :]' into {basename: roi_tuple}."""
+    roi_map = {}
+    line_re = re.compile(r"^\s*(\S+)\s*:\s*(\[.*\])\s*$")
+    with open(path) as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = line_re.match(line)
+            if not m:
+                raise ValueError(f"{path}:{lineno}: can't parse line: {line!r}")
+            roi_map[os.path.basename(m.group(1))] = _parse_roi_spec(m.group(2))
+    return roi_map
+
+
+def rois_for_paths(roi_file, file_paths, default_full=True):
+    """Return a list of ROI tuples aligned 1:1 to file_paths, matched by basename."""
+    roi_map = load_roi_file(roi_file)
+    full = (slice(None), slice(None), slice(None))
+    rois, missing = [], []
+    for p in file_paths:
+        b = os.path.basename(p)
+        if b in roi_map:
+            rois.append(roi_map[b])
+        else:
+            missing.append(b)
+            if not default_full:
+                raise ValueError(f"No ROI entry for {b} in {roi_file}")
+            rois.append(full)
+    if missing:
+        print(f"[rois] WARNING: no ROI for {len(missing)} file(s); using full volume: {missing}")
+    unused = [k for k in roi_map if k not in {os.path.basename(p) for p in file_paths}]
+    if unused:
+        print(f"[rois] note: {len(unused)} ROI entries in file didn't match this folder: {unused}")
+    return rois

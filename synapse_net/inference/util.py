@@ -356,6 +356,7 @@ def inference_helper(
     force: bool = False,
     output_key: Optional[str] = None,
     model_resolution: Optional[Tuple[float, float, float]] = None,
+    resolution: Optional[float] = 1.0,
     scale: Optional[Tuple[float, float, float]] = None,
     allocate_output: bool = False,
 ) -> None:
@@ -379,6 +380,7 @@ def inference_helper(
         output_key: Output key for the prediction. If none will write an hdf5 file.
         model_resolution: The resolution / voxel size to which the inputs should be scaled for prediction.
             If given, the scaling factor will automatically be determined based on the voxel_size of the input data.
+        resolution: the voxel size of the tomogram.
         scale: Fixed factor for scaling the model inputs. Cannot be passed together with 'model_resolution'.
         allocate_output: Whether to allocate the output for the segmentation function.
     """
@@ -458,7 +460,9 @@ def inference_helper(
         if output_key is None:
             from synapse_net.file_utils import write_mrc
             # 1.221 nm = 12.21 Angstroms
-            write_mrc(segmentation, output_path, v_size=1, dtype=np.float32)
+            if resolution!=1:
+                print(f"[debug] using resolution: {resolution}")
+            write_mrc(segmentation, output_path, v_size=resolution, dtype=np.float32)
             # write_mrc(segmentation, output_path, dtype=np.float32)
         else:
             with open_file(output_path, "a") as f:

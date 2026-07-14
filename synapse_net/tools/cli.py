@@ -192,7 +192,11 @@ def segmentation_cli():
         "--extra_input_ext", default=".tif", help="File extension for the extra inputs, default is tif."
     )
     parser.add_argument(
-        "--resolution", type=float,
+        "--model_resolution", type=float,
+        help="The voxel size (in nm) the custom model was trained on. Used for scaling."
+    )
+    parser.add_argument(
+        "--resolution", type=float, default=1.0,
         help="The voxel size (in nm) the custom model was trained on. Used for scaling."
     )
     parser.add_argument(
@@ -225,13 +229,15 @@ def segmentation_cli():
     # If the scale argument is not passed, then we get the average training resolution for the model.
     # The inputs will then be scaled to match this resolution based on the voxel size from the mrc files.
     if args.scale is None:
-        model_resolution = get_model_training_resolution(args.model, args.resolution)
+        model_resolution = get_model_training_resolution(args.model, args.model_resolution)
         model_resolution = tuple(model_resolution[ax] for ax in ("yx" if is_2d else "zyx"))
         scale = None
     # Otherwise, we set the model resolution to None and use the scaling factor provided by the user.
     else:
         model_resolution = None
         scale = (2 if is_2d else 3) * (args.scale,)
+
+    resolution = args.resolution
 
     if args.scalable:
         if not args.model.startswith(("vesicle", "mito", "active")):
@@ -253,7 +259,7 @@ def segmentation_cli():
     inference_helper(
         args.input_path, args.output_path, segmentation_function,
         mask_input_path=args.mask_path, force=args.force, data_ext=args.data_ext,
-        output_key=args.segmentation_key, model_resolution=model_resolution, scale=scale,
+        output_key=args.segmentation_key, model_resolution=model_resolution, resolution=resolution, scale=scale,
         allocate_output=allocate_output, extra_input_path=args.extra_input_path,
         extra_input_ext=args.extra_input_ext
     )

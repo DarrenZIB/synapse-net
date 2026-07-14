@@ -1,4 +1,5 @@
 import os
+import re
 from synapse_net.file_utils import save_args_to_yaml
 from glob import glob
 from typing import Optional, Tuple
@@ -12,6 +13,7 @@ from sklearn.model_selection import train_test_split
 from torch_em.model import AnisotropicUNet, UNet2d
 
 from synapse_net.inference.inference import get_model_path, get_available_models
+from synapse_net.file_utils import rois_for_paths
  # from roi_test import rois_for_paths
 
 
@@ -91,7 +93,6 @@ def _determine_ndim(patch_shape):
     is_2d = z == 1
     ndim = 2 if is_2d else 3
     return is_2d, ndim
-
 
 def get_supervised_loader(
     data_paths: Tuple[str],
@@ -183,15 +184,6 @@ def get_supervised_loader(
         label_dtype=label_dtype, rois=rois, **loader_kwargs,
     )
     return loader
-
-def _expand_rois(rois, n_files):
-    """torch_em wants one ROI per file. If a single ROI (tuple of slices) was
-    given, replicate it across all files. If it's already a per-file list, leave it."""
-    if rois is None:
-        return None
-    if isinstance(rois, tuple) and all(isinstance(r, slice) for r in rois):
-        return [rois] * n_files          # single ROI -> one per file
-    return rois                          # already a list of per-file ROIs
 
 
 def save_loader_patches_mrc(loader, n_samples=5, save_dir="loader_check_mrc"):
@@ -502,11 +494,9 @@ def main():
     train_image_paths, train_label_paths, val_image_paths, val_label_paths, raw_key, label_key =\
         _parse_input_files(args)
 
-    #train_rois = rois_for_paths(args.roi_file, train_image_paths) if args.roi_file else None
-    #val_rois = rois_for_paths(args.roi_file, val_image_paths) if args.roi_file else None
+    train_rois = rois_for_paths(args.roi_file, train_image_paths) if args.roi_file else None
+    val_rois = rois_for_paths(args.roi_file, val_image_paths) if args.roi_file else None
 
-    #print(train_rois)
-    #print(val_rois)
 
     checkpoint_path = _parse_checkpoint(args.initial_model)
 
@@ -516,6 +506,5 @@ def main():
         raw_key=raw_key, label_key=label_key, patch_shape=args.patch_shape, batch_size=args.batch_size,
         n_samples_train=args.n_samples_train, n_samples_val=args.n_samples_val,
         check=args.check, n_iterations=args.n_iterations, save_root=args.save_root,
-        checkpoint_path=checkpoint_path
-        #, train_rois=train_rois, val_rois=val_rois,
+        checkpoint_path=checkpoint_path, train_rois=train_rois, val_rois=val_rois,
     )
