@@ -208,7 +208,8 @@ def segmentation_cli():
     args = parser.parse_args()
 
     # Save configuration to YAML
-    save_args_to_yaml(args, args.output_path, prefix="segmentation_config")
+    name = os.path.splitext(os.path.basename(args.input_path))[0]
+    save_args_to_yaml(args, args.output_path, name)
 
     if args.checkpoint is None:
         model = get_model(args.model)

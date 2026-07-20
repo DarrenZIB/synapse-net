@@ -11,7 +11,7 @@ from .mitochondria import segment_mitochondria
 from .ribbon_synapse import segment_ribbon_synapse_structures
 from .vesicles import segment_vesicles
 from .cristae import segment_cristae
-from .util import get_device
+from .util import get_device, get_prediction
 from ..file_utils import get_cache_dir
 
 
@@ -287,8 +287,9 @@ def run_segmentation(
             if no_postprocessing:
                 from .util import get_prediction
                 pred = get_prediction(image, tiling=tiling, model=model, verbose=verbose)
+                print(f"[debug] Post Processing turned off")
                 return (pred[0]) # foreground mask (your tubes)
-            print("With Post Processing")
+            print(f"[debug]Post Processing turned on")
             segmentation = segment_vesicles(
                 image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs
             )
