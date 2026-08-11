@@ -66,6 +66,7 @@ def segment_mitochondria(
     boundary_threshold: float = 0.25,
     area_threshold: int = 5000,
     preprocess: Callable = None,
+    no_postprocessing: Optional[bool] = False,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Segment mitochondria in an input volume.
 
@@ -84,6 +85,7 @@ def segment_mitochondria(
         ws_block_shape: The block shape for the seeded watershed.
         ws_halo: The halo for the seeded watershed.
         boundary_threshold: The boundary threshold distance calculation.
+        no_postprocessing: Decides whether post-processing is turned on or off
         area_threshold: The maximum area (in pixels) of holes to be removed or filled in the segmentation.
             This parameter is passed to `skimage.morphology.remove_small_holes`.
 
@@ -91,6 +93,13 @@ def segment_mitochondria(
         The segmentation mask as a numpy array, or a tuple containing the segmentation mask
         and the predictions if return_predictions is True.
     """
+    if no_postprocessing:
+        print(f"[debug] post processing turned off")
+        prediction = get_prediction(input_volume, tiling=tiling, model=model, verbose=verbose)
+        return (prediction[0]) # foreground mask
+    else:
+        print(f"[debug] post processing turned on")
+
     if verbose:
         print("Segmenting mitochondria in volume of shape", input_volume.shape)
     # Create the scaler to handle prediction with a different scaling factor.

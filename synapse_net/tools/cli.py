@@ -196,6 +196,10 @@ def segmentation_cli():
         help="The voxel size (in nm) the custom model was trained on. Used for scaling."
     )
     parser.add_argument(
+        "--distance_based_segmentation", type=bool, default=False,
+        help="Turning distance based segmentation on or off"
+    )
+    parser.add_argument(
         "--resolution", type=float, default=1.0,
         help="The voxel size (in nm) the custom model was trained on. Used for scaling."
     )
@@ -239,6 +243,7 @@ def segmentation_cli():
         scale = (2 if is_2d else 3) * (args.scale,)
 
     resolution = args.resolution
+    dbs= args.distance_based_segmentation
 
     if args.scalable:
         if not args.model.startswith(("vesicle", "mito", "active")):
@@ -253,7 +258,7 @@ def segmentation_cli():
 
     else:
         segmentation_function = partial(
-            run_segmentation, model=model, model_type=args.model, verbose=args.verbose, tiling=tiling, no_postprocessing=args.no_postprocessing,
+            run_segmentation, model=model, model_type=args.model, verbose=args.verbose, tiling=tiling, no_postprocessing=args.no_postprocessing, distance_based_segmentation=dbs,
         )
         allocate_output = False
 
@@ -262,5 +267,5 @@ def segmentation_cli():
         mask_input_path=args.mask_path, force=args.force, data_ext=args.data_ext,
         output_key=args.segmentation_key, model_resolution=model_resolution, resolution=resolution, scale=scale,
         allocate_output=allocate_output, extra_input_path=args.extra_input_path,
-        extra_input_ext=args.extra_input_ext
+        extra_input_ext=args.extra_input_ext,
     )

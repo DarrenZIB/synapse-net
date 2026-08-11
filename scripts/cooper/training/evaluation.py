@@ -16,13 +16,19 @@ def evaluate(labels, vesicles):
     return [stats["f1"], stats["precision"], stats["recall"], sbd]
 
 
-def load_data(file_path, key=None):
-    """Load data from either MRC or HDF5 file."""
-    ext = os.path.splitext(file_path)[1].lower()
 
+def load_data(file_path, key=None):
+    ext = os.path.splitext(file_path)[1].lower()
     if ext in ['.mrc', '.rec']:
         with mrcfile.open(file_path, permissive=True) as f:
             data = f.data.copy()
+        if np.issubdtype(data.dtype, np.floating):
+            if data.max() <= 1.0:
+                raise ValueError(
+                    f"{file_path} looks like a probability map, not a segmentation. "
+                    "Threshold + run connected components first."
+                )
+            data = np.round(data)  # float-encoded integer IDs
         return data.astype(np.int64)
     elif ext in ['.h5', '.hdf5']:
         with h5py.File(file_path, 'r') as f:
@@ -92,24 +98,39 @@ def evaluate_file(labels_path, vesicles_path, model_name, output_dir,
 
 
 def evaluate_folder(labels_path, vesicles_path, model_name, output_dir,
-                     segment_key=None, anno_key=None, mask_path=None):
+                    segment_key=None, anno_key=None, mask_path=None):
     print(f"Evaluating folder {vesicles_path}")
     print(f"Using labels stored in {labels_path}")
 
-    label_files = os.listdir(labels_path)
-    vesicles_files = os.listdir(vesicles_path)
+    label_files = set(os.listdir(labels_path))
+    vesicles_files = sorted(os.listdir(vesicles_path))
 
+    n_matched = 0
     for vesicle_file in vesicles_files:
-        if vesicle_file in label_files:
-            evaluate_file(
-                os.path.join(labels_path, vesicle_file),
-                os.path.join(vesicles_path, vesicle_file),
-                model_name,
-                output_dir,
-                segment_key,
-                anno_key,
-                mask_path,
-            )
+        stem, ext = os.path.splitext(vesicle_file)
+        # prediction files are named <tomo>_prediction.mrc, GT is <tomo>.mrc
+        candidates = [vesicle_file, stem.removesuffix("_prediction") + ext]
+
+        label_file = next((c for c in candidates if c in label_files), None)
+        if label_file is None:
+            print(f"  no matching ground truth for {vesicle_file}, skipping")
+            continue
+
+        n_matched += 1
+        evaluate_file(
+            os.path.join(labels_path, label_file),
+            os.path.join(vesicles_path, vesicle_file),
+            model_name,
+            output_dir,
+            segment_key,
+            anno_key,
+            mask_path,
+        )
+
+    if n_matched == 0:
+        raise RuntimeError(
+            f"No prediction/ground-truth pairs matched between {vesicles_path} and {labels_path}"
+        )
 
 
 def main():

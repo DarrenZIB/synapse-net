@@ -11,7 +11,6 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import imageio.v3 as imageio
 import elf.parallel as parallel
-import mrcfile
 import numpy as np
 import torch
 import torch_em
@@ -381,6 +380,7 @@ def inference_helper(
         model_resolution: The resolution / voxel size to which the inputs should be scaled for prediction.
             If given, the scaling factor will automatically be determined based on the voxel_size of the input data.
         resolution: the voxel size of the tomogram.
+        distance_based_segmentation: Turning distance based segmentation on or off.
         scale: Fixed factor for scaling the model inputs. Cannot be passed together with 'model_resolution'.
         allocate_output: Whether to allocate the output for the segmentation function.
     """
@@ -435,7 +435,12 @@ def inference_helper(
         # data across a new first axis (= channel axis).
         input_volume = _load_input(img_path, extra_files, i)
         # Load the mask (if given).
-        mask = None if mask_files is None else imageio.imread(mask_files[i])
+        mask = None
+        if mask_files is not None:
+            if ".mrc" in mask_files[i]:
+                mask, _ = read_mrc(mask_files[i])
+            else:
+                mask = imageio.imread(mask_files[i])
 
         # Determine the scale factor:
         # If the neither the 'scale' nor 'model_resolution' arguments were passed then set it to None.
@@ -458,12 +463,11 @@ def inference_helper(
         os.makedirs(os.path.split(output_path)[0], exist_ok=True)
 
         if output_key is None:
-            from synapse_net.file_utils import write_mrc
+            from synapse_net.file_utils import write_mrc, read_mrc
             # 1.221 nm = 12.21 Angstroms
-            if resolution!=1:
+            if resolution != 1:
                 print(f"[debug] using resolution: {resolution}")
-            write_mrc(segmentation, output_path, v_size=resolution, dtype=np.float32)
-            # write_mrc(segmentation, output_path, dtype=np.float32)
+            write_mrc(segmentation, output_path, v_size=resolution, dtype=np.int8)
         else:
             with open_file(output_path, "a") as f:
                 f.create_dataset(output_key, data=segmentation, compression="gzip")

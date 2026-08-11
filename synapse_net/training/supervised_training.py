@@ -9,11 +9,13 @@ from glob import glob
 import torch
 import numpy as np
 import torch_em
+import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from torch_em.model import AnisotropicUNet, UNet2d
 
 from synapse_net.inference.inference import get_model_path, get_available_models
 from synapse_net.file_utils import rois_for_paths
+from synapse_net.tools.sfd_loss import SurfaceDiceLoss
  # from roi_test import rois_for_paths
 
 
@@ -429,6 +431,23 @@ def _parse_checkpoint(initial_model):
     model_path = get_model_path(initial_model)
     return model_path
 
+class WeightedLossSum(nn.Module):
+    def __init__(self, losses=[SurfaceDiceLoss(), torch_em.loss.DiceLoss()], weights=[0.2, 0.8]):
+        super().__init__()
+        self.losses = nn.ModuleList(losses)
+        self.weights = list(weights)
+
+    def forward(self, pred, target):
+        return sum(w * loss(pred, target) for w, loss in zip(self.weights, self.losses))
+
+
+def _dice_summation():
+    return WeightedLossSum(
+        [SurfaceDiceLoss(), torch_em.loss.DiceLoss()],
+        [0.2, 0.8],
+    )
+    # loss = torch.mul(SurfaceDiceLoss(), 0.2) + torch_em.loss.Diceloss()
+    # return loss
 
 def main():
     """@private
@@ -444,16 +463,16 @@ def main():
         "Check out the information below for details on the arguments of this function.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument("-n", "--name", required=True, help="The name of the model to be trained.")
-    parser.add_argument("-p", "--patch_shape", nargs=3, type=int, help="The patch shape for training.")
+    parser.add_argument("-n", "--name", required=False, default='V2_NoCTFsdf', help="The name of the model to be trained.")
+    parser.add_argument("-p", "--patch_shape", nargs=3, default=(32, 32, 32), type=int, help="The patch shape for training.")
 
     # Folders with training data, containing raw/image data and labels.
-    parser.add_argument("-i", "--train_folder", required=True, help="The input folder with the training image data.")
+    parser.add_argument("-i", "--train_folder", required=False, help="The input folder with the training image data.", default='/scratch/htc/nhajarol/synapse-net/data/SyntheticVesicles/v2/NoCTF/tomograms')
     parser.add_argument("--image_file_pattern", default="*.mrc",
                         help="The pattern for selecting image files. For example, '*.mrc' to select all mrc files.")
     parser.add_argument("--raw_key",
                         help="The internal path for the raw data. If not given, will be determined based on the file extension.")  # noqa
-    parser.add_argument("-l", "--label_folder", required=True, help="The input folder with the training labels.")
+    parser.add_argument("-l", "--label_folder", required=False, default='/scratch/htc/nhajarol/synapse-net/data/SyntheticVesicles/v2/NoCTF/labels', help="The input folder with the training labels.")
     parser.add_argument("--label_file_pattern", default="*.mrc",
                         help="The pattern for selecting label files. For example, '*.tif' to select all tif files.")
     parser.add_argument("--label_key",
@@ -468,8 +487,7 @@ def main():
     # Optional: choose a model for initializing the weights.
     available_models = get_available_models()
     parser.add_argument(
-        "--initial_model",
-        help="Choose a model checkpoint for weight initialization.\n"
+        "--initial_model", default='vesicles_cryo', help="Choose a model checkpoint for weight initialization.\n"
         "This may either be the path to an existing model checkpoint or the name of a pretrained model.\n"
         f"The following pretrained models are available: {available_models}.\n"
         "If not given, the model will be randomly initialized."
@@ -477,14 +495,13 @@ def main():
 
     # More optional argument:
     parser.add_argument("--batch_size", type=int, default=1, help="The batch size for training.")
-    parser.add_argument("--n_samples_train", type=int, help="The number of samples per epoch for training. If not given will be derived from the data size.")  # noqa
-    parser.add_argument("--n_samples_val", type=int, help="The number of samples per epoch for validation. If not given will be derived from the data size.")  # noqa
+    parser.add_argument("--n_samples_train", type=int, default=100, help="The number of samples per epoch for training. If not given will be derived from the data size.")  # noqa
+    parser.add_argument("--n_samples_val", type=int, default=10, help="The number of samples per epoch for validation. If not given will be derived from the data size.")  # noqa
     parser.add_argument("--val_fraction", type=float, default=0.15, help="The fraction of the data to use for validation. This has no effect if 'val_folder' and 'val_label_folder' were passed.")  # noqa
     parser.add_argument("--check", action="store_true", help="Visualize samples from the data loaders to ensure correct data instead of running training.")  # noqa
-    parser.add_argument("--n_iterations", type=int, default=int(1e5), help="The maximal number of iterations to train for.")  # noqa
+    parser.add_argument("--n_iterations", type=int, default=int(1e2), help="The maximal number of iterations to train for.")  # noqa
     parser.add_argument("--save_root", help="Root path for saving the checkpoint and log dir.")
-    parser.add_argument("--roi_file", default=None,
-                        help="Text file mapping 'filename.mrc : [z, y, x]' to per-file ROIs.")
+    parser.add_argument("--roi_file", default=None, help="Text file mapping 'filename.mrc : [z, y, x]' to per-file ROIs.")
     args = parser.parse_args()
 
     # Save configuration to YAML
@@ -497,7 +514,6 @@ def main():
     train_rois = rois_for_paths(args.roi_file, train_image_paths) if args.roi_file else None
     val_rois = rois_for_paths(args.roi_file, val_image_paths) if args.roi_file else None
 
-
     checkpoint_path = _parse_checkpoint(args.initial_model)
 
     supervised_training(
@@ -506,5 +522,5 @@ def main():
         raw_key=raw_key, label_key=label_key, patch_shape=args.patch_shape, batch_size=args.batch_size,
         n_samples_train=args.n_samples_train, n_samples_val=args.n_samples_val,
         check=args.check, n_iterations=args.n_iterations, save_root=args.save_root,
-        checkpoint_path=checkpoint_path, train_rois=train_rois, val_rois=val_rois,
+        checkpoint_path=checkpoint_path, train_rois=train_rois, val_rois=val_rois, loss_fn=_dice_summation()
     )

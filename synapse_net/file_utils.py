@@ -102,8 +102,8 @@ def read_mrc(path: str) -> Tuple[np.ndarray, Dict[str, float]]:
 
     # Transpose the data to match python axis order.
     data = np.flip(data, axis=1) if data.ndim == 3 else np.flip(data, axis=0)
-    return data, voxel_size
-
+    # return data, voxel_size
+    return data.astype(np.uint8), voxel_size
 
 def read_ome_zarr(uri: str, scale_level: int = 0, fs=None) -> Tuple[np.ndarray, Dict[str, float]]:
     """Read data and voxel size from an ome.zarr file.

@@ -137,7 +137,7 @@ def get_model_training_resolution(model_type: str, custom_resolution: float = No
         # TODO add the correct resolutions, these are the resolutions of the source models.
         "vesicles_2d_maus": {"x": 1.35, "y": 1.35},
         "vesicles_3d_endbulb": {"x": 1.35, "y": 1.35, "z": 1.35},
-        "vesicles_3d_innerear": {"x": 1.35, "y": 1.35, "z": 1.35},
+        "vesicles_3d_innerear": {"x": 1.35, "y": 1.35, "z": 1.35}
     }
     # If custom resolution provided, add it for this model
     if custom_resolution is not None:
@@ -284,17 +284,9 @@ def run_segmentation(
 
     else:
         if model_type.startswith("vesicles"):
-            if no_postprocessing:
-                from .util import get_prediction
-                pred = get_prediction(image, tiling=tiling, model=model, verbose=verbose)
-                print(f"[debug] Post Processing turned off")
-                return (pred[0]) # foreground mask (your tubes)
-            print(f"[debug]Post Processing turned on")
-            segmentation = segment_vesicles(
-                image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs
-            )
-        elif model_type == "mitochondria" or model_type == "mitochondria2":
-            segmentation = segment_mitochondria(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
+            segmentation = segment_vesicles(image, model=model, tiling=tiling, scale=scale, verbose=verbose, no_postprocessing=no_postprocessing, **kwargs)
+        elif model_type.startswith("mito"):
+            segmentation = segment_mitochondria(image, model=model, tiling=tiling, scale=scale, verbose=verbose, no_postprocessing=no_postprocessing, **kwargs)
         elif model_type == "active_zone":
             segmentation = segment_active_zone(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
         elif model_type == "compartments":

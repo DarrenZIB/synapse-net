@@ -137,12 +137,13 @@ def segment_vesicles(
     tiling: Optional[Dict[str, Dict[str, int]]] = None,
     min_size: int = 500,
     verbose: bool = True,
-    distance_based_segmentation: bool = True,
+    distance_based_segmentation: bool = False,
     return_predictions: bool = False,
     scale: Optional[List[float]] = None,
     exclude_boundary: bool = False,
     exclude_boundary_vesicles: bool = False,
     mask: Optional[np.ndarray] = None,
+    no_postprocessing: Optional[bool] = False,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Segment vesicles in an input volume or image.
 
@@ -162,11 +163,18 @@ def segment_vesicles(
             out less vesicles at the boundary and is better suited for volumes with small context in z.
             If `exclude_boundary` is also set to True, then this option will have no effect.
         mask: An optional mask that is used to restrict the segmentation.
-
+        no_postprocessing: Decides whether post-processing is turned on or off
     Returns:
         The segmentation mask as a numpy array, or a tuple containing the segmentation mask
         and the predictions if return_predictions is True.
     """
+    if no_postprocessing:
+        print(f"[debug] post processing turned off")
+        prediction = get_prediction(input_volume, tiling=tiling, model=model, verbose=verbose)
+        return (prediction[0]) # foreground mask (your tubes)
+    else:
+        print(f"[debug] post processing turned on")
+
     if verbose:
         print("Segmenting vesicles in volume of shape", input_volume.shape)
     # Create the scaler to handle prediction with a different scaling factor.
