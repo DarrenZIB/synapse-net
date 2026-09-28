@@ -3,7 +3,6 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 
-print("\nUsing SFD Loss\n")
 _sfd_iters = 3
 _sfd_smooth = 3
 _separate_pool = True
@@ -72,15 +71,17 @@ def _apply_gaussian_filter(
     return F.conv3d(seg, g_kernel, padding=padding, groups=seg.shape[1])
 
 def _surface_dice_loss( pred, target, separate_pool=False):
+
+
     out_channels = 1
 
     target_oh = target
-    pred_prob = torch.sigmoid(pred)
-    target_oh = (
+    pred_prob = pred
+    target_oh = torch.clamp(
             _apply_gaussian_filter(
                 (target_oh == 1) * 1.0, kernel_size=15, sigma=2.0
             )
-            * 1.5
+            * 1.5, max=1.0
     )
     target_oh = target_oh.detach()
     Sp = _skel(pred_prob, _sfd_iters, separate_pool=separate_pool)
@@ -100,8 +101,8 @@ class SurfaceDiceLoss(nn.Module):
         super().__init__()
 
     def forward(self, pred, target):
-        print(f"target shape: {target.shape}") # (B, C, W, H, D)
-        print(f"prediction shape: {pred.shape}")
+        # print(f"target shape: {target.shape}") # (B, C, W, H, D)
+        # print(f"prediction shape: {pred.shape}")
 
 
         return _surface_dice_loss(

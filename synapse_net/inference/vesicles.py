@@ -168,15 +168,9 @@ def segment_vesicles(
         The segmentation mask as a numpy array, or a tuple containing the segmentation mask
         and the predictions if return_predictions is True.
     """
-    if no_postprocessing:
-        print(f"[debug] post processing turned off")
-        prediction = get_prediction(input_volume, tiling=tiling, model=model, verbose=verbose)
-        return (prediction[0]) # foreground mask (your tubes)
-    else:
-        print(f"[debug] post processing turned on")
-
     if verbose:
         print("Segmenting vesicles in volume of shape", input_volume.shape)
+
     # Create the scaler to handle prediction with a different scaling factor.
     scaler = _Scaler(scale, verbose)
     input_volume = scaler.scale_input(input_volume)
@@ -184,8 +178,21 @@ def segment_vesicles(
     # Rescale the mask if it was given and run prediction.
     if mask is not None:
         mask = scaler.scale_input(mask, is_segmentation=True)
-    pred = get_prediction(input_volume, tiling=tiling, model_path=model_path, model=model, verbose=verbose, mask=mask)
+    pred = get_prediction(
+        input_volume, tiling=tiling, model_path=model_path, model=model, verbose=verbose, mask=mask
+    )
     foreground, boundaries = pred[:2]
+
+    # Without post-processing we return the raw foreground prediction,
+    # but still rescaled back to the original input size.
+    if no_postprocessing:
+        print("[debug] post processing turned off")
+        foreground = scaler.rescale_output(foreground, is_segmentation=False)
+        if return_predictions:
+            return foreground, scaler.rescale_output(pred, is_segmentation=False)
+        return foreground
+
+    print("[debug] post processing turned on")
 
     # Deal with 2D segmentation case.
     kwargs = {}

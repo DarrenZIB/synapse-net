@@ -16,7 +16,6 @@ def evaluate(labels, vesicles):
     return [stats["f1"], stats["precision"], stats["recall"], sbd]
 
 
-
 def load_data(file_path, key=None):
     ext = os.path.splitext(file_path)[1].lower()
     if ext in ['.mrc', '.rec']:

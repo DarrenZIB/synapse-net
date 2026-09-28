@@ -85,23 +85,19 @@ def segment_mitochondria(
         ws_block_shape: The block shape for the seeded watershed.
         ws_halo: The halo for the seeded watershed.
         boundary_threshold: The boundary threshold distance calculation.
-        no_postprocessing: Decides whether post-processing is turned on or off
         area_threshold: The maximum area (in pixels) of holes to be removed or filled in the segmentation.
             This parameter is passed to `skimage.morphology.remove_small_holes`.
+        preprocess: Optional preprocessing function applied before prediction.
+        no_postprocessing: If True, return the raw foreground prediction instead of running
+            the watershed segmentation. Scaling and masking are still applied.
 
     Returns:
         The segmentation mask as a numpy array, or a tuple containing the segmentation mask
         and the predictions if return_predictions is True.
     """
-    if no_postprocessing:
-        print(f"[debug] post processing turned off")
-        prediction = get_prediction(input_volume, tiling=tiling, model=model, verbose=verbose)
-        return (prediction[0]) # foreground mask
-    else:
-        print(f"[debug] post processing turned on")
-
     if verbose:
         print("Segmenting mitochondria in volume of shape", input_volume.shape)
+
     # Create the scaler to handle prediction with a different scaling factor.
     scaler = _Scaler(scale, verbose)
     input_volume = scaler.scale_input(input_volume)
@@ -109,16 +105,32 @@ def segment_mitochondria(
     # Rescale the mask if it was given and run prediction.
     if mask is not None:
         mask = scaler.scale_input(mask, is_segmentation=True)
+
     pred = get_prediction(
-        input_volume, model_path=model_path, model=model, tiling=tiling, mask=mask, verbose=verbose,
-        preprocess=preprocess
+        input_volume, model_path=model_path, model=model, tiling=tiling, mask=mask,
+        verbose=verbose, preprocess=preprocess
     )
+    foreground, boundaries = pred[:2]
+
+    # Without post-processing we return the raw foreground prediction,
+    # rescaled back to the original input size.
+    if no_postprocessing:
+        if verbose:
+            print("[debug] post-processing turned off")
+        foreground = scaler.rescale_output(foreground, is_segmentation=False)
+        if return_predictions:
+            return foreground, scaler.rescale_output(pred, is_segmentation=False)
+        return foreground
+
+    if verbose:
+        print("[debug] post-processing turned on")
 
     # Run segmentation and rescale the result if necessary.
-    foreground, boundaries = pred[:2]
-    seg = _run_segmentation(foreground, boundaries, verbose=verbose, min_size=min_size, seed_distance=seed_distance,
-                            block_shape=ws_block_shape, halo=ws_halo, boundary_threshold=boundary_threshold,
-                            area_threshold=area_threshold)
+    seg = _run_segmentation(
+        foreground, boundaries, verbose=verbose, min_size=min_size, seed_distance=seed_distance,
+        block_shape=ws_block_shape, halo=ws_halo, boundary_threshold=boundary_threshold,
+        area_threshold=area_threshold
+    )
     seg = scaler.rescale_output(seg, is_segmentation=True)
 
     if return_predictions:

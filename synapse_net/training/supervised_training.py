@@ -499,6 +499,7 @@ def main():
     parser.add_argument("--n_samples_val", type=int, default=10, help="The number of samples per epoch for validation. If not given will be derived from the data size.")  # noqa
     parser.add_argument("--val_fraction", type=float, default=0.15, help="The fraction of the data to use for validation. This has no effect if 'val_folder' and 'val_label_folder' were passed.")  # noqa
     parser.add_argument("--check", action="store_true", help="Visualize samples from the data loaders to ensure correct data instead of running training.")  # noqa
+    parser.add_argument("--sfd", action="store_true", help="Activate surface dice loss")
     parser.add_argument("--n_iterations", type=int, default=int(1e2), help="The maximal number of iterations to train for.")  # noqa
     parser.add_argument("--save_root", help="Root path for saving the checkpoint and log dir.")
     parser.add_argument("--roi_file", default=None, help="Text file mapping 'filename.mrc : [z, y, x]' to per-file ROIs.")
@@ -516,11 +517,21 @@ def main():
 
     checkpoint_path = _parse_checkpoint(args.initial_model)
 
+    if args.sfd:
+        print("Using SFD")
+        sfd = _dice_summation()
+    else:
+        print("Not using SFD")
+        sfd = None
+
+
     supervised_training(
         name=args.name, train_paths=train_image_paths, val_paths=val_image_paths,
         train_label_paths=train_label_paths, val_label_paths=val_label_paths,
         raw_key=raw_key, label_key=label_key, patch_shape=args.patch_shape, batch_size=args.batch_size,
         n_samples_train=args.n_samples_train, n_samples_val=args.n_samples_val,
         check=args.check, n_iterations=args.n_iterations, save_root=args.save_root,
-        checkpoint_path=checkpoint_path, train_rois=train_rois, val_rois=val_rois, loss_fn=_dice_summation()
+        checkpoint_path=checkpoint_path, train_rois=train_rois, val_rois=val_rois, loss_fn=sfd
     )
+
+

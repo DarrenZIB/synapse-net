@@ -133,7 +133,7 @@ def get_model_training_resolution(model_type: str, custom_resolution: float = No
         "ribbon": {"x": 1.188, "y": 1.188, "z": 1.188},
         "vesicles_2d": {"x": 1.35, "y": 1.35},
         "vesicles_3d": {"x": 1.35, "y": 1.35, "z": 1.35},
-        "vesicles_cryo": {"x":1, "y": 1, "z": 1},
+        "vesicles_cryo": {"x":4.99, "y": 4.99, "z": 4.99},
         # TODO add the correct resolutions, these are the resolutions of the source models.
         "vesicles_2d_maus": {"x": 1.35, "y": 1.35},
         "vesicles_3d_endbulb": {"x": 1.35, "y": 1.35, "z": 1.35},
@@ -290,7 +290,7 @@ def run_segmentation(
         elif model_type == "active_zone":
             segmentation = segment_active_zone(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
         elif model_type == "compartments":
-            segmentation = segment_compartments(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
+            segmentation = segment_compartments(image, model=model, tiling=tiling, scale=scale, verbose=verbose, no_postprocessing=no_postprocessing, **kwargs)
         elif model_type == "ribbon":
             segmentation = _segment_ribbon_AZ(image, model=model, tiling=tiling, scale=scale, verbose=verbose, **kwargs)
         elif model_type == "cristae" or model_type == "cristae2" or model_type == "cristae3":

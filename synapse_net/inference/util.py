@@ -24,6 +24,7 @@ from skimage.measure import regionprops
 from skimage.morphology import remove_small_holes
 from skimage.transform import rescale, resize
 from torch_em.util.prediction import predict_with_halo
+from synapse_net.file_utils import read_mrc
 from tqdm import tqdm
 
 
@@ -384,6 +385,8 @@ def inference_helper(
         scale: Fixed factor for scaling the model inputs. Cannot be passed together with 'model_resolution'.
         allocate_output: Whether to allocate the output for the segmentation function.
     """
+    from synapse_net.file_utils import read_mrc
+
     if (scale is not None) and (model_resolution is not None):
         raise ValueError("You must not provide both 'scale' and 'model_resolution' arguments.")
 
@@ -438,6 +441,7 @@ def inference_helper(
         mask = None
         if mask_files is not None:
             if ".mrc" in mask_files[i]:
+                print("mask path is loaded")
                 mask, _ = read_mrc(mask_files[i])
             else:
                 mask = imageio.imread(mask_files[i])

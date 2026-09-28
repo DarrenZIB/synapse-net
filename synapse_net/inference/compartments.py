@@ -155,7 +155,8 @@ def segment_compartments(
     scale: Optional[List[float]] = None,
     mask: Optional[np.ndarray] = None,
     n_slices_exclude: int = 0,
-    boundary_threshold: float=0.4,
+    boundary_threshold: float=0.6,
+    no_postprocessing: Optional[bool] = False,
     **kwargs,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Segment synaptic compartments in an input volume.
@@ -170,6 +171,7 @@ def segment_compartments(
         scale: The scale factor to use for rescaling the input volume before prediction.
         n_slices_exclude:
         boundary_threshold: Threshold that determines when the prediction of the network is foreground for the segmentation. Need higher threshold than default for TEM.
+        no_postprocessing: Decides whether post-processing is turned on or off
 
     Returns:
         The segmentation mask as a numpy array, or a tuple containing the segmentation mask
@@ -182,17 +184,31 @@ def segment_compartments(
     scaler = _Scaler(scale, verbose)
     input_volume = scaler.scale_input(input_volume)
 
+    # Rescale the mask if it was given.
+    if mask is not None:
+        mask = scaler.scale_input(mask, is_segmentation=True)
+
     # Run prediction. Support models with a single or multiple channels,
     # assuming that the first channel is the boundary prediction.
-    pred = get_prediction(input_volume, tiling=tiling, model_path=model_path, model=model, verbose=verbose)
+    pred = get_prediction(
+        input_volume, tiling=tiling, model_path=model_path, model=model, mask=mask, verbose=verbose
+    )
 
     # Remove channel axis if necessary.
     if pred.ndim != input_volume.ndim:
         assert pred.ndim == input_volume.ndim + 1
         pred = pred[0]
 
-    # Run the compartment segmentation.
-    # We may want to expose some of the parameters here.
+    # Without post-processing we return the raw prediction,
+    # rescaled back to the original input size.
+    if no_postprocessing:
+        if verbose:
+            print("[debug] post-processing turned off")
+        return scaler.rescale_output(pred, is_segmentation=False)
+
+    if verbose:
+        print("[debug] post-processing turned on")
+
     t0 = time.time()
     if input_volume.ndim == 2:
         seg = _segment_compartments_2d(pred, boundary_threshold=boundary_threshold)
