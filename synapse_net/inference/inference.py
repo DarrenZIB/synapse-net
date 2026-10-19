@@ -105,6 +105,8 @@ def get_model(model_type: str, device: Optional[Union[str, torch.device]] = None
     model_path = get_model_path(model_type)
     model = torch.load(model_path, weights_only=False)
     model.to(device)
+    model_bottleneck = model.vgg16()
+    print(model_bottleneck)
     return model
 
 
@@ -133,12 +135,19 @@ def get_model_training_resolution(model_type: str, custom_resolution: float = No
         "ribbon": {"x": 1.188, "y": 1.188, "z": 1.188},
         "vesicles_2d": {"x": 1.35, "y": 1.35},
         "vesicles_3d": {"x": 1.35, "y": 1.35, "z": 1.35},
-        "vesicles_cryo": {"x":4.99, "y": 4.99, "z": 4.99},
+        # "vesicles_cryo": {"x": 1.0012, "y": 1.0012, "z": 1.0012},  # 10529 and 10531
+        "vesicles_cryo": {"x": 1.22, "y": 1.22, "z": 1.22},  # Supervised and inhouse
+        # "vesicles_cryo": {"x": 1.35, "y": 1.35, "z": 0.88},  # default
+        # "vesicles_cryo": {"x": 1.344, "y": 1.344, "z": 1.344},  # 12794
         # TODO add the correct resolutions, these are the resolutions of the source models.
         "vesicles_2d_maus": {"x": 1.35, "y": 1.35},
         "vesicles_3d_endbulb": {"x": 1.35, "y": 1.35, "z": 1.35},
         "vesicles_3d_innerear": {"x": 1.35, "y": 1.35, "z": 1.35}
     }
+
+    print("resolution function")
+
+
     # If custom resolution provided, add it for this model
     if custom_resolution is not None:
         resolutions[model_type] = {
@@ -232,6 +241,22 @@ def _segment_ribbon_AZ(image, model, tiling, scale, verbose, return_predictions=
         return segmentations, predictions
     return segmentations
 
+# def collect_bottleneck_features(model, flatten=True):
+#     # Last Conv3d in the bottleneck = your "(4): Conv3d(512, 512, ...)"
+#     conv = [m for m in model.base.modules() if isinstance(m, torch.nn.Conv3d)][-1]
+#     vectors = []
+#
+#     def hook(module, inputs, output):
+#         feats = output.detach().float().cpu()
+#         if flatten:
+#             vec = feats.flatten(start_dim=1)     # every value: (1, 512*z*y*x)
+#         else:
+#             vec = feats.mean(dim=(2, 3, 4))      # channel averages: (1, 512)
+#         vectors.append(vec.numpy())
+#
+#     handle = conv.register_forward_hook(hook)
+#     return vectors, handle
+
 
 def run_segmentation(
     image: np.ndarray,
@@ -261,6 +286,10 @@ def run_segmentation(
     Returns:
         The segmentation. For models that return multiple segmentations, this function returns a dictionary.
     """
+    # print(model.base)  # just the bottleneck
+    # feature_path = kwargs.pop("feature_path", "bottleneck_vectors.npy")
+    # vectors, handle = collect_bottleneck_features(model)
+
     # --- DEBUG: save raw network prediction before any post-processing ---
     if os.environ.get("SYNAPSE_DEBUG_PRED"):
         import mrcfile
@@ -300,4 +329,10 @@ def run_segmentation(
                                            voxel_size=voxel_size, **kwargs)
         else:
             raise ValueError(f"Unknown model type: {model_type}")
+
+        # handle.remove()
+        # all_vectors = np.concatenate(vectors, axis=0)
+        # np.save(feature_path, all_vectors)
+        # print(f"[bottleneck] saved {all_vectors.shape} to {feature_path}")
+
         return segmentation

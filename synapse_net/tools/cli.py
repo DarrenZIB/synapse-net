@@ -11,7 +11,6 @@ from ..inference.util import inference_helper, parse_tiling
 from .pool_visualization import _visualize_vesicle_pools
 from synapse_net.file_utils import save_args_to_yaml
 
-
 def imod_point_cli():
     parser = argparse.ArgumentParser(
         description="Convert a vesicle segmentation to an IMOD point model, "
@@ -46,6 +45,10 @@ def imod_point_cli():
     parser.add_argument(
         "--force", action="store_true",
         help="Whether to over-write already present export results."
+    )
+    parser.add_argument(
+        "--extract_features", action="store_true",
+        help="Whether to extract features at inferance time."
     )
     args = parser.parse_args()
 
@@ -201,7 +204,7 @@ def segmentation_cli():
     )
     parser.add_argument(
         "--resolution", type=float, default=1.0,
-        help="The voxel size (in nm) the custom model was trained on. Used for scaling."
+        help="Resolution of the Tomogram (in nm)"
     )
     parser.add_argument(
         "--no_postprocessing", "-pp", action="store_true",
@@ -227,6 +230,7 @@ def segmentation_cli():
         else:
             model = torch.load(checkpoint_path, weights_only=False)
         assert model is not None, f"The model from {args.checkpoint} could not be loaded."
+
 
     is_2d = "2d" in args.model
     tiling = parse_tiling(args.tile_shape, args.halo, is_2d=is_2d)

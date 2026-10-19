@@ -27,6 +27,25 @@ from torch_em.util.prediction import predict_with_halo
 from synapse_net.file_utils import read_mrc
 from tqdm import tqdm
 
+# Set by inference_helper to the feature file for the tomogram currently being segmented.
+_FEATURE_PATH = None
+
+
+def collect_bottleneck_features(model, flatten=True):
+    # Last Conv3d in the bottleneck = the "(4): Conv3d(512, 512, ...)" layer.
+    conv = [m for m in model.base.modules() if isinstance(m, torch.nn.Conv3d)][-1]
+    vectors = []
+
+    def hook(module, inputs, output):
+        feats = output.detach().float().cpu()
+        if flatten:
+            vec = feats.flatten(start_dim=1)     # every value: (1, 512*z*y*x)
+        else:
+            vec = feats.mean(dim=(2, 3, 4))      # channel averages: (1, 512)
+        vectors.append(vec.numpy())
+
+    handle = conv.register_forward_hook(hook)
+    return vectors, handle
 
 #
 # Utils for prediction.
@@ -192,10 +211,24 @@ def get_prediction(
         for dim in tiling["tile"]:
             updated_tiling["tile"][dim] = tiling["tile"][dim] - 2 * tiling["halo"][dim]
         # print(f"updated_tiling {updated_tiling}")
-        prediction = get_prediction_torch_em(
-            input_volume, updated_tiling, model_path, model, verbose, with_channels,
-            mask=mask, prediction=prediction, devices=devices, preprocess=preprocess,
-        )
+        handle = None
+        if model is not None:
+            vectors, handle = collect_bottleneck_features(model)
+        try:
+            prediction = get_prediction_torch_em(
+                input_volume, updated_tiling, model_path, model, verbose, with_channels,
+                mask=mask, prediction=prediction, devices=devices, preprocess=preprocess,
+            )
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        if handle is not None and vectors:
+            feature_path = _FEATURE_PATH or "bottleneck_features.npy"
+            os.makedirs(os.path.dirname(feature_path) or ".", exist_ok=True)
+            all_vectors = np.concatenate(vectors, axis=0)  # (n_tiles, 512)
+            np.save(feature_path, all_vectors)
+            print(f"[bottleneck] saved {all_vectors.shape} to {feature_path}")
 
     return prediction
 
@@ -385,6 +418,8 @@ def inference_helper(
         scale: Fixed factor for scaling the model inputs. Cannot be passed together with 'model_resolution'.
         allocate_output: Whether to allocate the output for the segmentation function.
     """
+    global _FEATURE_PATH
+
     from synapse_net.file_utils import read_mrc
 
     if (scale is not None) and (model_resolution is not None):
@@ -457,11 +492,16 @@ def inference_helper(
             this_scale = _derive_scale(img_path, model_resolution)
 
         # Run the segmentation.
-        if allocate_output:
-            segmentation = np.zeros(input_volume.shape, dtype="uint32")
-            segmentation_function(input_volume, output=segmentation, mask=mask, scale=this_scale)
-        else:
-            segmentation = segmentation_function(input_volume, mask=mask, scale=this_scale)
+        name = os.path.splitext(input_name)[0]
+        _FEATURE_PATH = os.path.join(os.path.split(output_path)[0], f"{name}_bottleneck_features.npy")
+        try:
+            if allocate_output:
+                segmentation = np.zeros(input_volume.shape, dtype="uint32")
+                segmentation_function(input_volume, output=segmentation, mask=mask, scale=this_scale)
+            else:
+                segmentation = segmentation_function(input_volume, mask=mask, scale=this_scale)
+        finally:
+            _FEATURE_PATH = None
 
         # Write the result to tif or h5.
         os.makedirs(os.path.split(output_path)[0], exist_ok=True)

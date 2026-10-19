@@ -47,6 +47,7 @@ def get_3d_model(
         gain=2,
         final_activation=final_activation,
     )
+
     return model
 
 
@@ -318,6 +319,9 @@ def supervised_training(
         model = get_2d_model(out_channels=out_channels, in_channels=in_channels)
     else:
         model = get_3d_model(out_channels=out_channels, in_channels=in_channels)
+
+    print(model)         # whole architecture
+    print(model.base)    # just the bottleneck
 
     base_loss = loss_fn if loss_fn is not None else torch_em.loss.DiceLoss()
     metric = base_loss

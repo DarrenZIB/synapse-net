@@ -11,8 +11,9 @@ import torch_em
 import torch_em.self_training as self_training
 from elf.io import open_file
 from sklearn.model_selection import train_test_split
+from skimage.transform import resize
 
-from .semisupervised_training import get_unsupervised_loader
+from .semisupervised_training import get_unsupervised_loader, MaskFractionSampler, _load_volume
 from .supervised_training import (
     get_2d_model, get_3d_model, get_supervised_loader, _determine_ndim, _derive_key_from_files
 )
@@ -38,6 +39,7 @@ def mean_teacher_adaptation(
     n_iterations: int = int(1e4),
     n_samples_train: Optional[int] = None,
     n_samples_val: Optional[int] = None,
+    mask_key: Optional[str] = None,
     train_mask_paths: Optional[Tuple[str]] = None,
     val_mask_paths: Optional[Tuple[str]] = None,
     patch_sampler: Optional[callable] = None,
@@ -89,13 +91,20 @@ def mean_teacher_adaptation(
         n_samples_val: The number of val samples per epoch. By default this will be estimated
             based on the patch_shape and size of the volumes used for validation.
         train_mask_paths: Sample masks used by the patch sampler to accept or reject patches for training.
+            Must be in the same order as `unsupervised_train_paths`.
         val_mask_paths: Sample masks used by the patch sampler to accept or reject patches for validation.
-        patch_sampler: Accept or reject patches based on a condition.
+            Must be in the same order as `unsupervised_val_paths`.
+        mask_key: The key that holds the masks inside of the mask files.
+            Defaults to 'data' for mrc / rec files and to `raw_key` otherwise.
+        patch_sampler: Accept or reject patches based on a condition. Called as `patch_sampler(raw, mask)`
+            when masks are given. Defaults to `MaskFractionSampler()` if masks are given.
         pseudo_label_sampler: Mask out regions of the pseudo labels where the teacher is not confident before updating the gradients.
         device: GPU ID for training.
         check: Whether to check the training and validation loaders instead of running training.
     """  # noqa
     assert (supervised_train_paths is None) == (supervised_val_paths is None)
+    assert (train_mask_paths is None) == (val_mask_paths is None), \
+        "Either pass both train_mask_paths and val_mask_paths or neither of them."
     is_2d, _ = _determine_ndim(patch_shape)
 
     if source_checkpoint is None:
@@ -109,17 +118,55 @@ def mean_teacher_adaptation(
             model = get_3d_model(out_channels=2)
         reinit_teacher = True
     else:
+        model = get_3d_model(out_channels=2)
         print("Mean teacher training initialized from source model:", source_checkpoint)
-        if os.path.isdir(source_checkpoint):
-            model = torch_em.util.load_model(source_checkpoint)
-        else:
-            model = torch.load(source_checkpoint, weights_only=False)
+        print(source_checkpoint)
+        # source_checkpoint = "/scratch/htc/nhajarol/synapse-net/checkpoints/V2_NoCTF/best.pt"
+        model = torch_em.util.load_model(source_checkpoint, device=device, model=model)
+        # if os.path.isdir(source_checkpoint):
+        #     print("Condition 1")
+        #     model = torch_em.util.load_model(source_checkpoint, device=device)
+        # else:
+        #     print("Condition 2")
+        #     # torch.serialization.add_safe_globals([torch_em.transform.raw.RawTransform])
+        #     # torch.serialization.safe_globals([torch_em.transform.raw.RawTransform])
+        #     # torch.serialization.add_safe_globals([torch_em.data.segmentation_dataset.SegmentationDataset])
+        #     # torch.serialization.add_safe_globals([torch_em.data.concat_dataset.ConcatDataset])
+        #     # torch.serialization.add_safe_globals([torch_em.transform.raw.standardize])
+        #     # torch.serialization.safe_globals([torch_em.transform.raw.standardize])
+        #     # torch.serialization.add_safe_globals([torch_em.transform.label.BoundaryTransform])
+        #     # torch.serialization.safe_globals([torch_em.transform.label.BoundaryTransform])
+        #     # torch.serialization.add_safe_globals([torch_em.transform.generic.Compose])
+        #     # torch.serialization.safe_globals([torch_em.transform.generic.Compose])
+        #     # torch.serialization.add_safe_globals([torch_em.transform.generic.PadIfNecessary])
+        #     # torch.serialization.safe_globals([torch_em.transform.generic.PadIfNecessary])
+        #     # torch.serialization.add_safe_globals([torch_em.transform.augmentation.KorniaAugmentationPipeline])
+        #     # torch.serialization.safe_globals([torch_em.transform.augmentation.KorniaAugmentationPipeline])
+        #     # torch.serialization.add_safe_globals([torch.nn.modules.container.ModuleList])
+        #     # torch.serialization.safe_globals([torch.nn.modules.container.ModuleList])
+        #     # torch.serialization.add_safe_globals([kornia.augmentation._3d.geometric.horizontal_flip.RandomHorizontalFlip3D])
+        #     # torch.serialization.safe_globals([kornia.augmentation._3d.geometric.horizontal_flip.RandomHorizontalFlip3D])
+        #     # torch.serialization.add_safe_globals([torch.distributions.bernoulli.Bernoulli])
+        #     # torch.serialization.safe_globals([torch.distributions.bernoulli.Bernoulli])
+        #     # torch.serialization.add_safe_globals([kornia.augmentation._3d.geometric.vertical_flip.RandomVerticalFlip3D])
+        #     # torch.serialization.safe_globals([kornia.augmentation._3d.geometric.vertical_flip.RandomVerticalFlip3D])
+        #     # torch.serialization.add_safe_globals([kornia.augmentation._3d.geometric.depthical_flip.RandomDepthicalFlip3D])
+        #     # torch.serialization.safe_globals([kornia.augmentation._3d.geometric.depthical_flip.RandomDepthicalFlip3D])
+        #     # torch.serialization.add_safe_globals([torch_em.data.sampler.MinInstanceSampler])
+        #     # torch.serialization.safe_globals([torch_em.data.sampler.MinInstanceSampler])
+        #     # torch.serialization.add_safe_globals([numpy._core.multiarray._reconstruct])
+        #     # torch.serialization.safe_globals([numpy._core.multiarray._reconstruct])
+        #     # state_dict = torch.load(source_checkpoint, map_location=torch.device("cpu"), weights_only=True)
+        #     # model_weights = state_dict['model_state_dict']  # Change key if named differently
+        #     # model.load_state_dict(model_weights)
+        #     model = torch.load(source_checkpoint, weights_only=False)
+
         reinit_teacher = False
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
 
-    # self training functionality
+    # seitlf training functionaly
     pseudo_labeler = self_training.DefaultPseudoLabeler(confidence_threshold=confidence_threshold)
     loss = self_training.DefaultSelfTrainingLoss()
     loss_and_metric = self_training.DefaultSelfTrainingLossAndMetric()
@@ -131,7 +178,8 @@ def mean_teacher_adaptation(
         batch_size=batch_size,
         n_samples=n_samples_train,
         sample_mask_paths=train_mask_paths,
-        sampler=patch_sampler
+        sampler=patch_sampler,
+        mask_key=mask_key,
     )
     unsupervised_val_loader = get_unsupervised_loader(
         data_paths=unsupervised_val_paths,
@@ -140,7 +188,8 @@ def mean_teacher_adaptation(
         batch_size=batch_size,
         n_samples=n_samples_val,
         sample_mask_paths=val_mask_paths,
-        sampler=patch_sampler
+        sampler=patch_sampler,
+        mask_key=mask_key,
     )
 
     if supervised_train_paths is not None:
@@ -201,10 +250,54 @@ PATCH_SHAPES = {
 """
 
 
-def _get_paths(input_folder, pattern, resize_training_data, model_name, tmp_dir, val_fraction):
+def _match_mask_paths(files, mask_folder, mask_pattern):
+    """Find the mask for each tomogram by file name.
+
+    A mask matches a tomogram if its stem is identical to the tomogram's stem, or starts with it
+    followed by a separator, e.g. 'tomo01.mrc' -> 'tomo01.mrc', 'tomo01_mask.mrc' or 'tomo01-boundary.h5'.
+    """
+    mask_files = sorted(glob(os.path.join(mask_folder, "**", mask_pattern), recursive=True))
+    if len(mask_files) == 0:
+        raise ValueError(f"Could not load any masks from {mask_folder} with pattern {mask_pattern}")
+
+    data_set = {os.path.abspath(ff) for ff in files}
+    mask_files = [mf for mf in mask_files if os.path.abspath(mf) not in data_set]
+
+    matched = []
+    for file_path in files:
+        stem = Path(file_path).stem
+        candidates = [mf for mf in mask_files if Path(mf).stem == stem]
+        if not candidates:
+            candidates = [
+                mf for mf in mask_files
+                if Path(mf).stem.startswith(stem) and not Path(mf).stem[len(stem)].isalnum()
+            ]
+        if len(candidates) != 1:
+            raise ValueError(
+                f"Expected exactly one mask for {file_path} in {mask_folder} (pattern {mask_pattern}), "
+                f"found {len(candidates)}: {candidates}"
+            )
+        matched.append(candidates[0])
+    return matched
+
+def _save_volume(path, data):
+    with open_file(path, mode="w") as f:
+        f.create_dataset("data", data=data, compression="lzf")
+
+
+def _get_paths(input_folder, pattern, resize_training_data, model_name, tmp_dir, val_fraction, mask_folder=None, mask_pattern="*", mask_key=None,):
+    """Get the train / val paths for the tomograms and, if a mask folder is given, for the matching masks.
+
+        Returns:
+            train_paths, val_paths, train_mask_paths, val_mask_paths, mask_key
+            The mask paths are None if no mask folder is given. The returned mask key is "data"
+            if the masks were resaved, otherwise the mask_key that was passed.
+        """
     files = sorted(glob(os.path.join(input_folder, "**", pattern), recursive=True))
     if len(files) == 0:
         raise ValueError(f"Could not load any files from {input_folder} with pattern {pattern}")
+
+    masks = None if mask_folder is None else _match_mask_paths(files, mask_folder, mask_pattern)
 
     # Heuristic: if we have less then 4 files then we crop a part of the volumes for validation.
     # And resave the volumes.
@@ -213,13 +306,21 @@ def _get_paths(input_folder, pattern, resize_training_data, model_name, tmp_dir,
     # We only resave the data if we resave val crops or resize the training data
     resave_data = resave_val_crops or resize_training_data
     if not resave_data:
-        train_paths, val_paths = train_test_split(files, test_size=val_fraction)
-        return train_paths, val_paths
+        if masks is None:
+            train_paths, val_paths = train_test_split(files, test_size=val_fraction)
+            return train_paths, val_paths, None, None, mask_key
+        # Split tomograms and masks together so that the pairs stay aligned.
+        train_paths, val_paths, train_masks, val_masks = train_test_split(files, masks, test_size=val_fraction)
+        return train_paths, val_paths, train_masks, val_masks, mask_key
 
     train_paths, val_paths = [], []
-    for file_path in files:
+    train_masks, val_masks = [], []
+
+    for i, file_path in enumerate(files):
         file_name = os.path.basename(file_path)
+        stem = Path(file_path).stem
         data = open_file(file_path, mode="r")["data"][:]
+        mask = None if masks is None else _load_volume(masks[i], mask_key)
 
         if resize_training_data:
             with mrcfile.open(file_path) as f:
@@ -227,7 +328,17 @@ def _get_paths(input_folder, pattern, resize_training_data, model_name, tmp_dir,
             voxel_size = {ax: vox_size / 10.0 for ax, vox_size in zip("xyz", voxel_size.item())}
             scale = compute_scale_from_voxel_size(voxel_size, model_name)
             scaler = _Scaler(scale, verbose=False)
-            data = scaler.sale_input(data)
+            data = scaler.scale_input(data)
+            if mask is not None:
+                # Nearest-neighbor resize of the mask directly to the resized data shape.
+                mask = resize(
+                    mask, data.shape, order=0, preserve_range=True, anti_aliasing=False
+                ).astype(mask.dtype)
+
+        if mask is not None and mask.shape != data.shape:
+            raise ValueError(
+                f"Shape mismatch between tomogram {file_path} {data.shape} and mask {masks[i]} {mask.shape}."
+            )
 
         if resave_val_crops:
             n_slices = data.shape[0]
@@ -244,16 +355,40 @@ def _get_paths(input_folder, pattern, resize_training_data, model_name, tmp_dir,
                 f.create_dataset("data", data=val_data, compression="lzf")
             val_paths.append(val_path)
 
+            if mask is not None:
+                # Crop the mask at exactly the same slice as the tomogram.
+                train_mask_path = os.path.join(tmp_dir, f"{stem}_mask_train.h5")
+                _save_volume(train_mask_path, mask[:val_slice])
+                train_masks.append(train_mask_path)
+
+                val_mask_path = os.path.join(tmp_dir, f"{stem}_mask_val.h5")
+                _save_volume(val_mask_path, mask[val_slice:])
+                val_masks.append(val_mask_path)
+
         else:
             output_path = os.path.join(tmp_dir, Path(file_name).with_suffix(".h5"))
             with open_file(output_path, mode="w") as f:
                 f.create_dataset("data", data=data, compression="lzf")
             train_paths.append(output_path)
 
-    if not resave_val_crops:
-        train_paths, val_paths = train_test_split(train_paths, test_size=val_fraction)
+            if mask is not None:
+                mask_output_path = os.path.join(tmp_dir, f"{stem}_mask.h5")
+                _save_volume(mask_output_path, mask)
+                train_masks.append(mask_output_path)
 
-    return train_paths, val_paths
+    if not resave_val_crops:
+        if masks is None:
+            train_paths, val_paths = train_test_split(train_paths, test_size=val_fraction)
+        else:
+            train_paths, val_paths, train_masks, val_masks = train_test_split(
+                train_paths, train_masks, test_size=val_fraction
+            )
+
+    if masks is None:
+        return train_paths, val_paths, None, None, mask_key
+        # Resaved masks are always stored under the key "data".
+    return train_paths, val_paths, train_masks, val_masks, "data"
+
 
 
 def _parse_patch_shape(patch_shape, model_name):
@@ -299,6 +434,18 @@ def main():
         help="The patch shape for training. By default the patch shape the source model was trained with is used."
     )
 
+    parser.add_argument(
+        "--mask_folder",
+        help="Folder with segmentation masks for the training tomograms (e.g. a boundary or compartment mask). "
+        "If given, training patches are only sampled where they overlap with the mask.\n"
+        "Masks are matched to tomograms by file name: 'tomo01.mrc' matches e.g. 'tomo01.mrc' or 'tomo01_mask.mrc'."
+    )
+    parser.add_argument("--mask_pattern", default="*",
+                        help="The pattern for selecting mask files in the mask folder, e.g. '*_mask.mrc'.")
+    parser.add_argument("--mask_key", help="The internal file path for the masks. Defaults to 'data' for mrc files and to the data key otherwise.")  # noqa
+    parser.add_argument("--min_mask_fraction", type=float, default=0.5,
+                        help="The minimal fraction of a patch that has to be inside the mask for it to be used.")
+
     # More optional argument:
     parser.add_argument("--batch_size", type=int, default=1, help="The batch size for training.")
     parser.add_argument("--n_samples_train", type=int, help="The number of samples per epoch for training. If not given will be derived from the data size.")  # noqa
@@ -329,11 +476,18 @@ def main():
 
     patch_shape = _parse_patch_shape(args.patch_shape, args.source_model)
     with tempfile.TemporaryDirectory() as tmp_dir:
-        unsupervised_train_paths, unsupervised_val_paths = _get_paths(
+        (
+            unsupervised_train_paths, unsupervised_val_paths, train_mask_paths, val_mask_paths, mask_key
+        ) = _get_paths(
             args.input_folder, args.file_pattern, args.resize_training_data,
             args.source_model, tmp_dir, args.val_fraction,
+            mask_folder = args.mask_folder, mask_pattern = args.mask_pattern, mask_key = args.mask_key,
         )
         unsupervised_train_paths, raw_key = _derive_key_from_files(unsupervised_train_paths, args.key)
+
+        patch_sampler = None
+        if train_mask_paths is not None:
+            patch_sampler = MaskFractionSampler(min_fraction=args.min_mask_fraction)
 
         mean_teacher_adaptation(
             name=args.name,
@@ -346,6 +500,10 @@ def main():
             batch_size=args.batch_size,
             n_samples_train=args.n_samples_train,
             n_samples_val=args.n_samples_val,
+            train_mask_paths=train_mask_paths,
+            val_mask_paths=val_mask_paths,
+            mask_key=mask_key,
+            patch_sampler=patch_sampler,
             check=args.check,
             save_root=args.save_root,
         )

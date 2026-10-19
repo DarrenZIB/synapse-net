@@ -1,15 +1,22 @@
+import atexit
+import os
+import shutil
+import tempfile
+import uuid
 from typing import Optional, Tuple
 
-import numpy as np
-import uuid
 import h5py
+import numpy as np
 import torch
 import torch_em
 import torch_em.self_training as self_training
+from elf.io import open_file
 from torchvision import transforms
 
-from synapse_net.file_utils import read_mrc
 from .supervised_training import get_2d_model, get_3d_model, get_supervised_loader, _determine_ndim
+
+
+_MRC_EXTENSIONS = (".mrc", ".rec")
 
 
 def weak_augmentations(p: float = 0.75) -> callable:
@@ -31,10 +38,12 @@ def weak_augmentations(p: float = 0.75) -> callable:
     ])
     return torch_em.transform.raw.get_raw_transform(normalizer=norm, augmentation1=aug)
 
+
 def drop_mask_channel(x):
-    x = x[:1]
-    return x
-    
+    """Keep only the raw channel of a stacked (raw, mask) patch."""
+    return x[:1]
+
+
 class ComposedTransform:
     def __init__(self, *funcs):
         self.funcs = funcs
@@ -44,13 +53,70 @@ class ComposedTransform:
             x = f(x)
         return x
 
-class ChannelSplitterSampler: 
+
+class ChannelSplitterSampler:
+    """Split a stacked (raw, mask) patch and pass both channels to the wrapped sampler."""
     def __init__(self, sampler):
         self.sampler = sampler
-    
+
     def __call__(self, x):
         raw, mask = x[0], x[1]
         return self.sampler(raw, mask)
+
+
+class MaskFractionSampler:
+    """Accept a patch if at least `min_fraction` of its voxels lie inside the mask.
+
+    Used as the default patch sampler when sample masks are given.
+
+    Args:
+        min_fraction: The minimal fraction of foreground mask voxels for accepting a patch.
+    """
+    def __init__(self, min_fraction: float = 0.5):
+        self.min_fraction = min_fraction
+
+    def __call__(self, raw, mask):
+        mask = np.asarray(mask)
+        return float((mask > 0).sum()) / mask.size >= self.min_fraction
+
+
+def _load_volume(path: str, key: Optional[str]) -> np.ndarray:
+    """Load a full volume. The key defaults to 'data' for mrc / rec files."""
+    if key is None:
+        if os.path.splitext(path)[1].lower() in _MRC_EXTENSIONS:
+            key = "data"
+        else:
+            raise ValueError(f"Cannot derive the internal dataset key for {path}, please pass it explicitly.")
+    with open_file(path, mode="r") as f:
+        return f[key][:]
+
+
+def _stack_raw_and_masks(data_paths, mask_paths, raw_key, mask_key, stack_dir):
+    """Stack each tomogram with its mask as (2, Z, Y, X) and save it as hdf5 (dataset 'raw')."""
+    if stack_dir is None:
+        # tempfile respects $TMPDIR, so this can be redirected to node-local scratch on a cluster.
+        stack_dir = tempfile.mkdtemp(prefix="synapse_net_masked_")
+        atexit.register(shutil.rmtree, stack_dir, ignore_errors=True)
+    else:
+        os.makedirs(stack_dir, exist_ok=True)
+
+    stacked_paths = []
+    for i, (data_path, mask_path) in enumerate(zip(data_paths, mask_paths)):
+        raw = _load_volume(data_path, raw_key)
+        mask = _load_volume(mask_path, mask_key)
+        if raw.shape != mask.shape:
+            raise ValueError(
+                f"Shape mismatch between tomogram {data_path} {raw.shape} and mask {mask_path} {mask.shape}."
+            )
+        stacked = np.stack([raw, (mask > 0).astype(raw.dtype)], axis=0)
+
+        out_path = os.path.join(stack_dir, f"stacked{i}_{uuid.uuid4().hex}.h5")
+        with h5py.File(out_path, "w") as f:
+            f.create_dataset("raw", data=stacked, chunks=True, compression="lzf")
+        stacked_paths.append(out_path)
+
+    return stacked_paths
+
 
 def get_unsupervised_loader(
     data_paths: Tuple[str],
@@ -60,7 +126,9 @@ def get_unsupervised_loader(
     n_samples: Optional[int],
     sample_mask_paths: Optional[Tuple[str]] = None,
     sampler: Optional[callable] = None,
-    exclude_top_and_bottom: bool = False, 
+    exclude_top_and_bottom: bool = False,
+    mask_key: Optional[str] = None,
+    stack_dir: Optional[str] = None,
 ) -> torch.utils.data.DataLoader:
     """Get a dataloader for unsupervised segmentation training.
 
@@ -73,46 +141,48 @@ def get_unsupervised_loader(
         batch_size: The batch size for training.
         n_samples: The number of samples per epoch. By default this will be estimated
             based on the patch_shape and size of the volumes used for training.
+        sample_mask_paths: The filepaths to the corresponding sample masks for each tomogram.
+            Must be in the same order as `data_paths` and have the same shape as the tomograms.
+            Nonzero voxels are treated as inside the mask.
+        sampler: Accept or reject patches based on a condition. If masks are given, it is called as
+            `sampler(raw, mask)`; if it is None, a `MaskFractionSampler()` is used.
+            Without masks, it is called as `sampler(raw)`.
         exclude_top_and_bottom: Whether to exluce the five top and bottom slices to
             avoid artifacts at the border of tomograms.
-        sample_mask_paths: The filepaths to the corresponding sample masks for each tomogram.
-        sampler: Accept or reject patches based on a condition.
+        mask_key: The key that holds the mask inside of the mask files.
+            Defaults to 'data' for mrc / rec files and to `raw_key` otherwise.
+        stack_dir: Folder for the temporary stacked (raw, mask) files. By default a temporary
+            folder is created (under $TMPDIR) and removed at exit.
 
     Returns:
         The PyTorch dataloader.
     """
     # We exclude the top and bottom slices where the tomogram reconstruction is bad.
-    # TODO this seems unneccesary if we have a boundary mask - remove? 
+    # TODO this seems unneccesary if we have a boundary mask - remove?
     if exclude_top_and_bottom:
         roi = np.s_[5:-5, :, :]
     else:
         roi = None
-    # stack tomograms and masks and write to temp files to use as input to RawDataset()    
+
     if sample_mask_paths is not None:
+        # Stack tomograms and masks and write them to temp files to use as input to RawDataset().
         assert len(data_paths) == len(sample_mask_paths), \
-            f"Expected equal number of data_paths and and sample_masks_paths, got {len(data_paths)} data paths and {len(sample_mask_paths)} mask paths."
-        
-        stacked_paths = []
-        for i, (data_path, mask_path) in enumerate(zip(data_paths, sample_mask_paths)):
-            raw = read_mrc(data_path)[0]
-            mask = read_mrc(mask_path)[0]
-            stacked = np.stack([raw, mask], axis=0)
+            f"Expected equal number of data_paths and and sample_masks_paths, got {len(data_paths)} data paths and {len(sample_mask_paths)} mask paths."  # noqa
+        if mask_key is None and os.path.splitext(sample_mask_paths[0])[1].lower() not in _MRC_EXTENSIONS:
+            mask_key = raw_key
 
-            tmp_path = f"/tmp/stacked{i}_{uuid.uuid4().hex}.h5"
-            with h5py.File(tmp_path, "w") as f:
-                f.create_dataset("raw", data=stacked, compression="gzip")
-            stacked_paths.append(tmp_path)
+        data_paths = tuple(_stack_raw_and_masks(data_paths, sample_mask_paths, raw_key, mask_key, stack_dir))
+        raw_key = "raw"
 
-        # update variables for RawDataset()
-        data_paths = tuple(stacked_paths)    
+        # Drop the mask channel BEFORE normalizing, so that the mask does not affect the raw statistics.
+        # (The sampler runs on the un-transformed patch, so it still sees the mask.)
         base_transform = torch_em.transform.get_raw_transform()
-        raw_transform = ComposedTransform(base_transform, drop_mask_channel)
-        sampler = ChannelSplitterSampler(sampler)
-        with_channels = True 
+        raw_transform = ComposedTransform(drop_mask_channel, base_transform)
+        sampler = ChannelSplitterSampler(MaskFractionSampler() if sampler is None else sampler)
+        with_channels = True
     else:
         raw_transform = torch_em.transform.get_raw_transform()
         with_channels = False
-        sampler = None
 
     _, ndim = _determine_ndim(patch_shape)
     transform = torch_em.transform.get_augmentations(ndim=ndim)
@@ -126,7 +196,8 @@ def get_unsupervised_loader(
 
     datasets = [
         torch_em.data.RawDataset(path, raw_key, patch_shape, raw_transform, transform, roi=roi,
-        n_samples=n_samples_per_ds, sampler=sampler, ndim=ndim, with_channels=with_channels, augmentations=augmentations)
+                                 n_samples=n_samples_per_ds, sampler=sampler, ndim=ndim,
+                                 with_channels=with_channels, augmentations=augmentations)
         for path in data_paths
     ]
     ds = torch.utils.data.ConcatDataset(datasets)
