@@ -144,6 +144,7 @@ def segment_vesicles(
     exclude_boundary_vesicles: bool = False,
     mask: Optional[np.ndarray] = None,
     no_postprocessing: Optional[bool] = False,
+    create_npy: bool = False,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Segment vesicles in an input volume or image.
 
@@ -179,7 +180,7 @@ def segment_vesicles(
     if mask is not None:
         mask = scaler.scale_input(mask, is_segmentation=True)
     pred = get_prediction(
-        input_volume, tiling=tiling, model_path=model_path, model=model, verbose=verbose, mask=mask
+        input_volume, tiling=tiling, model_path=model_path, model=model, verbose=verbose, mask=mask, create_npy=create_npy,
     )
     foreground, boundaries = pred[:2]
 

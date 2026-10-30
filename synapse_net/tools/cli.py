@@ -151,6 +151,9 @@ def segmentation_cli():
         "--mask_path", help="The filepath to a tif file with a mask that will be used to restrict the segmentation."
         "Can also be a directory with tifs if the filestructure matches input_path."
     )
+    parser.add_argument(
+        "--mask_ext", default=".tif", help="File extension of the masks, e.g. .tif or .mrc. By default .tif."
+    )
     parser.add_argument("--input_key", "-k", required=False)
     parser.add_argument(
         "--force", action="store_true",
@@ -195,12 +198,15 @@ def segmentation_cli():
         "--extra_input_ext", default=".tif", help="File extension for the extra inputs, default is tif."
     )
     parser.add_argument(
-        "--model_resolution", type=float,
-        help="The voxel size (in nm) the custom model was trained on. Used for scaling."
+        "--model_resolution", type=float, default=None,
+        help="The voxel size (in nm) the custom model was trained on. Used for scaling. (e.g. '1.22 1.22 1.22')"
     )
     parser.add_argument(
-        "--distance_based_segmentation", type=bool, default=False,
-        help="Turning distance based segmentation on or off"
+        "--create_npy", action="store_true",
+        help="Whether to create an npy file of the segmentation or not"
+    )
+    parser.add_argument("--distance_based_segmentation", action="store_true",
+        help="Use distance-based vesicle segmentation."
     )
     parser.add_argument(
         "--resolution", type=float, default=1.0,
@@ -208,7 +214,7 @@ def segmentation_cli():
     )
     parser.add_argument(
         "--no_postprocessing", "-pp", action="store_true",
-        help="hether to run instance-segmentation post-processing. "
+        help="Whether to run instance-segmentation post-processing. "
              "Use --no_post_processing to return the raw thresholded prediction instead "
              "(useful for structures the vesicle post-processing doesn't fit, e.g. tubes)."
     )
@@ -262,13 +268,13 @@ def segmentation_cli():
 
     else:
         segmentation_function = partial(
-            run_segmentation, model=model, model_type=args.model, verbose=args.verbose, tiling=tiling, no_postprocessing=args.no_postprocessing, distance_based_segmentation=dbs,
+            run_segmentation, model=model, model_type=args.model, verbose=args.verbose, tiling=tiling, no_postprocessing=args.no_postprocessing, distance_based_segmentation=dbs, create_npy=args.create_npy
         )
         allocate_output = False
 
     inference_helper(
         args.input_path, args.output_path, segmentation_function,
-        mask_input_path=args.mask_path, force=args.force, data_ext=args.data_ext,
+        mask_input_path=args.mask_path, mask_input_ext=args.mask_ext, force=args.force, data_ext=args.data_ext,
         output_key=args.segmentation_key, model_resolution=model_resolution, resolution=resolution, scale=scale,
         allocate_output=allocate_output, extra_input_path=args.extra_input_path,
         extra_input_ext=args.extra_input_ext,

@@ -105,8 +105,6 @@ def get_model(model_type: str, device: Optional[Union[str, torch.device]] = None
     model_path = get_model_path(model_type)
     model = torch.load(model_path, weights_only=False)
     model.to(device)
-    model_bottleneck = model.vgg16()
-    print(model_bottleneck)
     return model
 
 
@@ -241,22 +239,6 @@ def _segment_ribbon_AZ(image, model, tiling, scale, verbose, return_predictions=
         return segmentations, predictions
     return segmentations
 
-# def collect_bottleneck_features(model, flatten=True):
-#     # Last Conv3d in the bottleneck = your "(4): Conv3d(512, 512, ...)"
-#     conv = [m for m in model.base.modules() if isinstance(m, torch.nn.Conv3d)][-1]
-#     vectors = []
-#
-#     def hook(module, inputs, output):
-#         feats = output.detach().float().cpu()
-#         if flatten:
-#             vec = feats.flatten(start_dim=1)     # every value: (1, 512*z*y*x)
-#         else:
-#             vec = feats.mean(dim=(2, 3, 4))      # channel averages: (1, 512)
-#         vectors.append(vec.numpy())
-#
-#     handle = conv.register_forward_hook(hook)
-#     return vectors, handle
-
 
 def run_segmentation(
     image: np.ndarray,
@@ -268,6 +250,7 @@ def run_segmentation(
     no_postprocessing: bool = False,
     **kwargs,
 ) -> np.ndarray | Dict[str, np.ndarray]:
+    create_npy = kwargs.pop("create_npy", False)
     """Run synaptic structure segmentation.
 
     Args:
@@ -286,15 +269,12 @@ def run_segmentation(
     Returns:
         The segmentation. For models that return multiple segmentations, this function returns a dictionary.
     """
-    # print(model.base)  # just the bottleneck
-    # feature_path = kwargs.pop("feature_path", "bottleneck_vectors.npy")
-    # vectors, handle = collect_bottleneck_features(model)
 
     # --- DEBUG: save raw network prediction before any post-processing ---
     if os.environ.get("SYNAPSE_DEBUG_PRED"):
         import mrcfile
         from .util import get_prediction
-        raw_pred = get_prediction(image, tiling=tiling, model=model, verbose=True)
+        raw_pred = get_prediction(image, tiling=tiling, model=model, verbose=True, create_npy=create_npy)
         print("pred shape:", raw_pred.shape)  # expect (>=2, z, y, x)
         fg, bd = raw_pred[0], raw_pred[1]
         print(f"foreground: max {fg.max():.3f} mean {fg.mean():.3f} frac>0.5 {(fg > 0.5).mean():.4f}")
@@ -313,7 +293,7 @@ def run_segmentation(
 
     else:
         if model_type.startswith("vesicles"):
-            segmentation = segment_vesicles(image, model=model, tiling=tiling, scale=scale, verbose=verbose, no_postprocessing=no_postprocessing, **kwargs)
+            segmentation = segment_vesicles(image, model=model, tiling=tiling, scale=scale, verbose=verbose, no_postprocessing=no_postprocessing, create_npy=create_npy, **kwargs)
         elif model_type.startswith("mito"):
             segmentation = segment_mitochondria(image, model=model, tiling=tiling, scale=scale, verbose=verbose, no_postprocessing=no_postprocessing, **kwargs)
         elif model_type == "active_zone":

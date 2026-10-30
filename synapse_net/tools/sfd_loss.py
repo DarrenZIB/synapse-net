@@ -101,9 +101,6 @@ class SurfaceDiceLoss(nn.Module):
         super().__init__()
 
     def forward(self, pred, target):
-        # print(f"target shape: {target.shape}") # (B, C, W, H, D)
-        # print(f"prediction shape: {pred.shape}")
-
 
         return _surface_dice_loss(
             pred[:, 1:2],

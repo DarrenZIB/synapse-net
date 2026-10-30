@@ -3,74 +3,83 @@ import os
 
 import h5py
 import pandas as pd
-import mrcfile
-import numpy as np
 
 from elf.evaluation import matching, symmetric_best_dice_score
+from synapse_net.file_utils import read_mrc  # adjust if your read_mrc lives elsewhere
+
+MRC_EXTENSIONS = (".mrc", ".rec")
+H5_EXTENSIONS = (".h5", ".hdf5")
+SUPPORTED_EXTENSIONS = MRC_EXTENSIONS + H5_EXTENSIONS
+
+
+def _is_mrc(path):
+    return path.lower().endswith(MRC_EXTENSIONS)
+
+
+def _is_h5(path):
+    return path.lower().endswith(H5_EXTENSIONS)
+
+
+def load_volume(path, group, key):
+    """Load a volume from an mrc/rec file or from `group/key` inside an h5 file.
+
+    For mrc/rec files the group and key are ignored.
+    """
+    if _is_mrc(path):
+        data, _ = read_mrc(path)
+        return data
+    if _is_h5(path):
+        with h5py.File(path, "r") as f:
+            return f[group][key][:]
+    raise ValueError(f"Unsupported file format: {path}. Expected one of {SUPPORTED_EXTENSIONS}.")
 
 
 def evaluate(labels, vesicles):
-    assert labels.shape == vesicles.shape
+    assert labels.shape == vesicles.shape, f"Shape mismatch: labels {labels.shape} vs vesicles {vesicles.shape}"
     stats = matching(vesicles, labels)
     sbd = symmetric_best_dice_score(vesicles, labels)
     return [stats["f1"], stats["precision"], stats["recall"], sbd]
 
 
-def load_data(file_path, key=None):
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext in ['.mrc', '.rec']:
-        with mrcfile.open(file_path, permissive=True) as f:
-            data = f.data.copy()
-        if np.issubdtype(data.dtype, np.floating):
-            if data.max() <= 1.0:
-                raise ValueError(
-                    f"{file_path} looks like a probability map, not a segmentation. "
-                    "Threshold + run connected components first."
-                )
-            data = np.round(data)  # float-encoded integer IDs
-        return data.astype(np.int64)
-    elif ext in ['.h5', '.hdf5']:
-        with h5py.File(file_path, 'r') as f:
-            if key is None:
-                raise ValueError(f"Key required for HDF5 file: {file_path}")
-            return f[key][:]
-    else:
-        raise ValueError(f"Unsupported file format: {ext}")
-
-
 def summarize_eval(results):
-    summary = results[["dataset", "f1-score", "precision", "recall", "SBD score"]].groupby("dataset").mean().reset_index("dataset")
-    total = results[["f1-score", "precision", "recall", "SBD score"]].mean().values.tolist()
-    summary = pd.concat([summary, pd.DataFrame([["all"] + total], columns=summary.columns)], ignore_index=True)
+    metrics = ["f1-score", "precision", "recall", "SBD score"]
+    summary = results[["dataset"] + metrics].groupby("dataset").mean().reset_index("dataset")
+    total = results[metrics].mean().values.tolist()
+    # Append the overall mean as an extra row (instead of overwriting the last dataset row).
+    summary.loc[len(summary)] = ["all"] + total
     table = summary.to_markdown(index=False)
     print(table)
 
 
-def evaluate_file(labels_path, vesicles_path, model_name, output_dir,
-                   segment_key=None, anno_key=None, mask_path=None):
+def evaluate_file(labels_path, vesicles_path, model_name, segment_key, anno_key, mask_key=None):
     print(f"Evaluate labels {labels_path} and vesicles {vesicles_path}")
 
     ds_name = os.path.basename(os.path.dirname(labels_path))
     tomo = os.path.basename(labels_path)
 
-    # Load ground truth labels (mrc or h5)
-    gt = load_data(labels_path, anno_key)
+    # Get the ground truth (and optional mask).
+    gt = load_volume(labels_path, "labels", anno_key)
 
-    # Load predicted vesicles (mrc or h5)
-    vesicles = load_data(vesicles_path, segment_key)
+    mask = None
+    if mask_key is not None:
+        if not _is_h5(labels_path):
+            raise ValueError("--mask_key is only supported when the labels are stored in an h5 file.")
+        mask = load_volume(labels_path, "labels", mask_key)
 
-    # Load mask if provided (separate file, mrc or h5)
-    if mask_path is not None:
-        mask = load_data(mask_path)
+    # Get the vesicle segmentation.
+    vesicles = load_volume(vesicles_path, "vesicles", segment_key)
+
+    if mask is not None:
         gt[mask == 0] = 0
         vesicles[mask == 0] = 0
 
-    # Evaluate the match of ground truth and vesicles
+    # Evaluate the match of ground truth and vesicles.
     scores = evaluate(gt, vesicles)
 
-    # Store results
-    os.makedirs(output_dir, exist_ok=True)
-    result_path = os.path.join(output_dir, f"evaluation_{model_name}.csv")
+    # Store results.
+    result_folder = "/scratch/htc/digbinedion/synapse-net/scripts/cooper/evaluation_results"
+    os.makedirs(result_folder, exist_ok=True)
+    result_path = os.path.join(result_folder, f"evaluation_{model_name}.csv")
     print("Evaluation results are saved to:", result_path)
 
     if os.path.exists(result_path):
@@ -79,81 +88,58 @@ def evaluate_file(labels_path, vesicles_path, model_name, output_dir,
         results = None
 
     res = pd.DataFrame(
-        [[ds_name, tomo] + scores],
-        columns=["dataset", "tomogram", "f1-score", "precision", "recall", "SBD score"]
+        [[ds_name, tomo] + scores], columns=["dataset", "tomogram", "f1-score", "precision", "recall", "SBD score"]
     )
     if results is None:
         results = res
     else:
         results = pd.concat([results, res])
-
-    # Avoid duplicate rows from re-running the same tomogram
-    results = results.drop_duplicates(subset=["dataset", "tomogram"], keep="last")
-
     results.to_csv(result_path, index=False)
 
-    # Print results
+    # Print results.
     summarize_eval(results)
 
 
-def evaluate_folder(labels_path, vesicles_path, model_name, output_dir,
-                    segment_key=None, anno_key=None, mask_path=None):
+def _stem(fname):
+    return os.path.splitext(fname)[0]
+
+
+def evaluate_folder(labels_path, vesicles_path, model_name, segment_key, anno_key, mask_key=None):
     print(f"Evaluating folder {vesicles_path}")
     print(f"Using labels stored in {labels_path}")
 
-    label_files = set(os.listdir(labels_path))
-    vesicles_files = sorted(os.listdir(vesicles_path))
+    # Match files by name without extension, so e.g. tomo1.h5 labels pair with tomo1.mrc vesicles.
+    label_files = {
+        _stem(f): f for f in sorted(os.listdir(labels_path)) if f.lower().endswith(SUPPORTED_EXTENSIONS)
+    }
+    vesicle_files = [f for f in sorted(os.listdir(vesicles_path)) if f.lower().endswith(SUPPORTED_EXTENSIONS)]
 
-    n_matched = 0
-    for vesicle_file in vesicles_files:
-        stem, ext = os.path.splitext(vesicle_file)
-        # prediction files are named <tomo>_prediction.mrc, GT is <tomo>.mrc
-        candidates = [vesicle_file, stem.removesuffix("_prediction") + ext]
-
-        label_file = next((c for c in candidates if c in label_files), None)
+    for vesicle_file in vesicle_files:
+        label_file = label_files.get(_stem(vesicle_file))
         if label_file is None:
-            print(f"  no matching ground truth for {vesicle_file}, skipping")
+            print(f"No labels found for {vesicle_file}, skipping.")
             continue
-
-        n_matched += 1
-        evaluate_file(
-            os.path.join(labels_path, label_file),
-            os.path.join(vesicles_path, vesicle_file),
-            model_name,
-            output_dir,
-            segment_key,
-            anno_key,
-            mask_path,
-        )
-
-    if n_matched == 0:
-        raise RuntimeError(
-            f"No prediction/ground-truth pairs matched between {vesicles_path} and {labels_path}"
-        )
+        evaluate_file(os.path.join(labels_path, label_file), os.path.join(vesicles_path, vesicle_file),
+                      model_name, segment_key, anno_key, mask_key)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-l", "--labels_path", required=True)
-    parser.add_argument("-v", "--vesicles_path", required=True)
+    parser.add_argument("-l", "--labels_path", required=True, help="Labels file or folder (.h5/.hdf5/.mrc/.rec).")
+    parser.add_argument("-v", "--vesicles_path", required=True,
+                        help="Vesicle segmentation file or folder (.h5/.hdf5/.mrc/.rec).")
     parser.add_argument("-n", "--model_name", required=True)
-    parser.add_argument("-o", "--output_dir", required=True)
-    parser.add_argument("-sk", "--segment_key", default=None)
-    parser.add_argument("-ak", "--anno_key", default=None)
-    parser.add_argument("-m", "--mask_path", default=None)
+    parser.add_argument("-sk", "--segment_key", help="Key under 'vesicles' in the h5 segmentation (ignored for mrc).")
+    parser.add_argument("-ak", "--anno_key", help="Key under 'labels' in the h5 labels (ignored for mrc).")
+    parser.add_argument("-m", "--mask_key", help="Key under 'labels' for a mask (h5 labels only).")
     args = parser.parse_args()
 
     vesicles_path = args.vesicles_path
     if os.path.isdir(vesicles_path):
-        evaluate_folder(
-            args.labels_path, vesicles_path, args.model_name, args.output_dir,
-            args.segment_key, args.anno_key, args.mask_path,
-        )
+        evaluate_folder(args.labels_path, vesicles_path, args.model_name, args.segment_key, args.anno_key,
+                        args.mask_key)
     else:
-        evaluate_file(
-            args.labels_path, vesicles_path, args.model_name, args.output_dir,
-            args.segment_key, args.anno_key, args.mask_path,
-        )
+        evaluate_file(args.labels_path, vesicles_path, args.model_name, args.segment_key, args.anno_key, args.mask_key)
 
 
 if __name__ == "__main__":

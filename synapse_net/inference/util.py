@@ -25,32 +25,11 @@ from skimage.morphology import remove_small_holes
 from skimage.transform import rescale, resize
 from torch_em.util.prediction import predict_with_halo
 from synapse_net.file_utils import read_mrc
+from synapse_net.tools.feature_extraction import BottleneckHook
 from tqdm import tqdm
 
 # Set by inference_helper to the feature file for the tomogram currently being segmented.
 _FEATURE_PATH = None
-
-
-def collect_bottleneck_features(model, flatten=True):
-    # Last Conv3d in the bottleneck = the "(4): Conv3d(512, 512, ...)" layer.
-    conv = [m for m in model.base.modules() if isinstance(m, torch.nn.Conv3d)][-1]
-    vectors = []
-
-    def hook(module, inputs, output):
-        feats = output.detach().float().cpu()
-        if flatten:
-            vec = feats.flatten(start_dim=1)     # every value: (1, 512*z*y*x)
-        else:
-            vec = feats.mean(dim=(2, 3, 4))      # channel averages: (1, 512)
-        vectors.append(vec.numpy())
-
-    handle = conv.register_forward_hook(hook)
-    return vectors, handle
-
-#
-# Utils for prediction.
-#
-
 
 class _Scaler:
     def __init__(self, scale, verbose):
@@ -147,6 +126,7 @@ def get_prediction(
     prediction: Optional[ArrayLike] = None,
     devices: Optional[List[str]] = None,
     preprocess: Optional[callable] = None,
+    create_npy: bool = False,
 ) -> ArrayLike:
     """Run prediction on a given volume.
 
@@ -211,24 +191,24 @@ def get_prediction(
         for dim in tiling["tile"]:
             updated_tiling["tile"][dim] = tiling["tile"][dim] - 2 * tiling["halo"][dim]
         # print(f"updated_tiling {updated_tiling}")
-        handle = None
-        if model is not None:
-            vectors, handle = collect_bottleneck_features(model)
+        hook = None
+        if create_npy and model is not None:
+            hook = BottleneckHook(model)
         try:
             prediction = get_prediction_torch_em(
                 input_volume, updated_tiling, model_path, model, verbose, with_channels,
                 mask=mask, prediction=prediction, devices=devices, preprocess=preprocess,
             )
         finally:
-            if handle is not None:
-                handle.remove()
+            if hook is not None:
+                hook.remove()
 
-        if handle is not None and vectors:
+        if hook is not None and hook.vectors:
             feature_path = _FEATURE_PATH or "bottleneck_features.npy"
             os.makedirs(os.path.dirname(feature_path) or ".", exist_ok=True)
-            all_vectors = np.concatenate(vectors, axis=0)  # (n_tiles, 512)
-            np.save(feature_path, all_vectors)
-            print(f"[bottleneck] saved {all_vectors.shape} to {feature_path}")
+            features = hook.result()
+            np.save(feature_path, features)
+            print(f"[bottleneck] saved {features.shape} to {feature_path}")
 
     return prediction
 
@@ -375,6 +355,42 @@ def _derive_scale(img_path, model_resolution):
         scale = None
 
     return scale
+
+# def _derive_scale(img_path, model_resolution):
+#     print("this is the model resolution", model_resolution)
+#     try:
+#         with mrcfile.open(img_path, "r") as f:
+#             voxel_size = f.voxel_size
+#             if len(model_resolution) == 2:
+#                 voxel_size = [voxel_size.y, voxel_size.x]
+#             else:
+#                 voxel_size = [voxel_size.z, voxel_size.y, voxel_size.x]
+#
+#         assert len(voxel_size) == len(model_resolution)
+#         # The voxel size is given in Angstrom and we need to translate it to nanometer.
+#         voxel_size = [vsize / 10 for vsize in voxel_size]
+#
+#         # Compute the correct scale factor.
+#         scale = tuple(vsize / res for vsize, res in zip(voxel_size, model_resolution))
+#         print("Rescaling the data at", img_path, "by", scale, "to match the training voxel size", model_resolution)
+#
+#     except Exception:
+#         warnings.warn(
+#             f"The voxel size could not be read from the data for {img_path}. "
+#             "This data will not be scaled for prediction."
+#         )
+#         if len(model_resolution) == 2:
+#             voxel_size = [model_resolution[1], model_resolution[2]]
+#         else:
+#             voxel_size = [model_resolution[1], model_resolution[2], model_resolution[0]]
+#
+#         assert len(voxel_size) == len(model_resolution)
+#         # The voxel size is given in Angstrom and we need to translate it to nanometer.
+#         voxel_size = [vsize / 10 for vsize in voxel_size]
+#         # Compute the correct scale factor.
+#         scale = tuple(vsize / res for vsize, res in zip(voxel_size, model_resolution))
+#         print("Rescaling the data at", img_path, "by", scale, "to match the training voxel size", model_resolution)
+#     return scale
 
 
 def inference_helper(

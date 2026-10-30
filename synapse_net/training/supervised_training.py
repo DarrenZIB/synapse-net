@@ -450,8 +450,6 @@ def _dice_summation():
         [SurfaceDiceLoss(), torch_em.loss.DiceLoss()],
         [0.2, 0.8],
     )
-    # loss = torch.mul(SurfaceDiceLoss(), 0.2) + torch_em.loss.Diceloss()
-    # return loss
 
 def main():
     """@private
@@ -467,7 +465,7 @@ def main():
         "Check out the information below for details on the arguments of this function.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument("-n", "--name", required=False, default='V2_NoCTFsdf', help="The name of the model to be trained.")
+    parser.add_argument("-n", "--name", required=True, help="The name of the model to be trained.")
     parser.add_argument("-p", "--patch_shape", nargs=3, default=(32, 32, 32), type=int, help="The patch shape for training.")
 
     # Folders with training data, containing raw/image data and labels.

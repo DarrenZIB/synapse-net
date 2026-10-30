@@ -85,6 +85,31 @@ def read_voxel_size(path: str) -> Dict[str, float] | None:
     return voxel_size
 
 
+# def read_mrc(path: str) -> Tuple[np.ndarray, Dict[str, float]]:
+#     """Read data and voxel size from mrc/rec file.
+#
+#     Args:
+#         path: Path to mrc/rec file.
+#
+#     Returns:
+#         The data read from the file.
+#         The voxel size read from the file.
+#     """
+#     with mrcfile.open(path, permissive=True) as mrc:
+#
+#         if mrc.voxel_size is None: # voxel_size is not empty and has value:
+#             mrc.voxel_size = resolution
+#             mrc.update_header_stats()
+#         voxel_size = _parse_voxel_size(mrc.voxel_size)
+#         data = np.asarray(mrc.data[:])
+#
+#     assert data.ndim in (2, 3)
+#
+#     # Transpose the data to match python axis order.
+#     data = np.flip(data, axis=1) if data.ndim == 3 else np.flip(data, axis=0)
+#     # return data, voxel_size
+#     return data.astype(np.uint8), voxel_size
+
 def read_mrc(path: str) -> Tuple[np.ndarray, Dict[str, float]]:
     """Read data and voxel size from mrc/rec file.
 
@@ -97,6 +122,7 @@ def read_mrc(path: str) -> Tuple[np.ndarray, Dict[str, float]]:
     """
     with mrcfile.open(path, permissive=True) as mrc:
         voxel_size = _parse_voxel_size(mrc.voxel_size)
+        print(voxel_size)
         data = np.asarray(mrc.data[:])
     assert data.ndim in (2, 3)
 
@@ -104,6 +130,8 @@ def read_mrc(path: str) -> Tuple[np.ndarray, Dict[str, float]]:
     data = np.flip(data, axis=1) if data.ndim == 3 else np.flip(data, axis=0)
     # return data, voxel_size
     return data.astype(np.uint8), voxel_size
+
+
 
 def read_ome_zarr(uri: str, scale_level: int = 0, fs=None) -> Tuple[np.ndarray, Dict[str, float]]:
     """Read data and voxel size from an ome.zarr file.
